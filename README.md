@@ -1,103 +1,116 @@
-# 🍅 Ketchup (Backend): Autonomous Social Coordination
+# Ketchup Backend
 
-Ketchup is an autonomous social coordination platform designed to solve the "scheduling friction" that plagues small friend groups. The system addresses the needs of "The Non-Planners"—groups who want to hang out but fail due to decision paralysis and logistical hurdles. By acting as a proactive "5th friend," Ketchup autonomously scans calendars, manages shared budgets, and generates curated options to shift the group from consensus-seeking to **Satisfaction Optimization** .
+FastAPI backend for group planning, voting, invites, availability, and post-event feedback.
 
----
+## Current Architecture
 
-## 🏗 Essential Project Information
+- `api/routes/*`: thin HTTP controllers
+- `services/*`: business logic and data orchestration
+- `agents/planning.py`: canonical LLM planner (OpenAI-compatible tool-calling)
+- `database/*`: asyncpg connection and schema migration SQL
+- `config/settings.py`: environment-based configuration
 
-### Core Philosophy
+`api/main.py` wires app startup/shutdown:
+- DB pool connect/disconnect
+- planner HTTP client lifecycle
+- background invite-expiry loop
 
-* **Context-Aware Itineraries:** Generates personalized logistics, such as carpooling assignments, based on real-time travel data.
-* **Vibe Spectrum Engine:** Instead of binary choices, it offers 5 distinct options ranging from "Safe" to "Adventurous" .
-* **Closed-Loop Learning:** A Retrospective Phase captures first-party behavioral feedback to update preferences for future cycles .
+Domain errors raised in services are mapped to HTTP responses through `ServiceError` handling in `api/main.py`.
 
-### Target Metrics
+## Runtime Requirements
 
-| Category | Metric | Target |
-| --- | --- | --- |
-| **ML** | RAGAS Faithfulness & Relevancy | > 0.8 |
-| **System** | End-to-End Latency (p99) | < 5 minutes |
-| **System** | Tool-Call Success Rate | > 95% |
-| **Business** | Monthly Closure Rate | 100% |
-| **Business** | Active Planning Time | < 5 minutes |
+- Python 3.12+
+- PostgreSQL
+- OpenAI-compatible chat completions endpoint for planner (default expects `/v1/chat/completions`)
+- Optional Google Maps server key for tool grounding
 
----
-
-## 📁 Repository Structure
-
-The `ketchup-backend` is organized following modular programming practices to ensure clarity and maintainability .
-
-* **`agents/`**: Canonical AI orchestration layer (vLLM client lifecycle, tool-calling loops, plan generation).
-* **`services/`**: Non-agent business logic and compatibility shims. `services/planner.py` is deprecated in favor of `agents.planning`.
-* **`api/`**: FastAPI gateway and REST endpoints for users, groups, events, and recommendations.
-  * **`routes/`**: Organized API route handlers.
-* **`database/`**: Data persistence and ORM layer.
-  * **`migrations/`**: Database schema migrations and version control.
-* **`config/`**: Configuration management and environment settings.
-* **`models/`**: Data entities and domain models.
-* **`utils/`**: Helper utilities for calendar operations, distance calculations, and constraint resolution.
-* **`analytics/`**: Success metrics tracking (functional option generation, logistics accuracy, event realization rate, post-event satisfaction).
-
----
-
-## ⚙️ Installation Instructions
-
-To replicate the environment and run the pipeline on a fresh machine, follow these steps:
-
-### 1. Prerequisites
-
-* **>Python 3.10+** and **Docker** installed.
-* **GCP Account** with an active project and billing enabled.
-* **API Keys**: Enabled Google Calendar API, Maps Platform, and Yelp Fusion API.
-
-### 2. Environment Setup
+Install:
 
 ```bash
-# Clone the repository
-git clone https://github.com/codeabiswas/ketchup-backend.git
 cd ketchup-backend
-
-# Install dependencies and tools
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-[cite_start]dvc pull  # Retrieve versioned data and artifacts [cite: 17, 70]
-
+cp .env.example .env
 ```
 
-### 3. Infrastructure Deployment
-
-Automated scripts handle the deployment to Google Kubernetes Engine (GKE):
+Run:
 
 ```bash
-cd infra/gcp
-terraform init
-[cite_start]terraform apply  # Provisions GKE cluster, Firestore, and BigQuery [cite: 464]
-
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
----
+Health:
 
-## 🚀 Usage Guidelines
+```bash
+curl http://localhost:8000/health
+```
 
-### 1. Data Pipeline & Orchestration
+## Key Environment Variables
 
-The pipeline is structured using Airflow DAGs to handle the workflow from data acquisition to finalized output .
+- `DATABASE_URL`
+- `VLLM_BASE_URL`
+- `VLLM_MODEL`
+- `VLLM_API_KEY`
+- `PLANNER_FALLBACK_ENABLED`
+- `GOOGLE_MAPS_API_KEY`
+- `BACKEND_INTERNAL_API_KEY`
+- `FRONTEND_URL`
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`
 
-* **Triggering DAGs**: Access the Airflow UI to manually trigger `monthly_plan_initiation`.
-* **Monitoring Flow**: Use the Airflow Gantt chart to identify bottlenecks and optimize slow tasks.
+## Auth Boundary
 
-### 2. Model Evaluation & Bias Detection
+Most application routes expect:
+- `X-User-Id` (UUID)
+- optional `X-Internal-Auth` when `BACKEND_INTERNAL_API_KEY` is configured
 
-Every release is gated by an automated evaluation pipeline:
+In local stack, frontend proxy injects these headers server-side.
 
-* **Run Evals**: Execute `pytest eval/` to compute RAGAS metrics on the golden set.
-* **Check Bias**: The pipeline performs data slicing to evaluate performance across different subgroups (age, gender, location) .
-* **Alerts**: If bias or performance regression is detected, the pipeline triggers an alert and blocks deployment.
+## API Surface (Current)
 
-### 3. Real-Time Monitoring
+Auth:
+- `POST /api/auth/google-signin`
 
-The system uses Google Cloud Monitoring and Prometheus for observability:
+Users:
+- `GET /api/users/me`
+- `PUT /api/users/me/preferences`
+- `GET /api/users/me/availability`
+- `PUT /api/users/me/availability`
 
-* **Latency**: Track p99 response times for the LLM and tool calls.
-* **Drift**: Weekly monitoring for data shift or model decay.
-* **Retraining**: If performance drops below the predefined threshold, the CI/CD pipeline automatically triggers retraining.
+Groups:
+- `POST /api/groups`
+- `GET /api/groups`
+- `GET /api/groups/{group_id}`
+- `PUT /api/groups/{group_id}`
+- `POST /api/groups/{group_id}/invite`
+- `POST /api/groups/{group_id}/invite/accept`
+- `POST /api/groups/{group_id}/invite/reject`
+- `PUT /api/groups/{group_id}/preferences`
+- `POST /api/groups/{group_id}/availability`
+
+Plans:
+- `POST /api/groups/{group_id}/generate-plans`
+- `GET /api/groups/{group_id}/plans/{round_id}`
+- `POST /api/groups/{group_id}/plans/{round_id}/vote`
+- `GET /api/groups/{group_id}/plans/{round_id}/results`
+- `POST /api/groups/{group_id}/plans/{round_id}/refine`
+- `POST /api/groups/{group_id}/plans/{round_id}/finalize`
+
+Feedback:
+- `POST /api/groups/{group_id}/events/{event_id}/feedback`
+- `GET /api/groups/{group_id}/events/{event_id}/feedback`
+
+## Planner Behavior (Current)
+
+- Planner calls an OpenAI-compatible model via `VLLM_BASE_URL`.
+- With `GOOGLE_MAPS_API_KEY`, planner uses tool grounding for places and directions.
+- If structured planner output fails, backend can synthesize deterministic maps-grounded plans (`maps_fallback`) from gathered tool results.
+- If planner fails and `PLANNER_FALLBACK_ENABLED=true`, generic fallback plans can be returned (`fallback`).
+
+## Validation Commands
+
+```bash
+python3 -m compileall agents api services
+```
+
+If you use the local Docker stack, prefer running via `ketchup-local/docker-compose.yml`.
