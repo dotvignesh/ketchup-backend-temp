@@ -1,5 +1,3 @@
-# services/auth_service.py
-
 """Authentication domain service."""
 
 from __future__ import annotations

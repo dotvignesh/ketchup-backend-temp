@@ -1,5 +1,3 @@
-# services/plans_service.py
-
 """Plan round service (generation, voting, refinement, finalization)."""
 
 from __future__ import annotations
@@ -9,12 +7,25 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from agents.planning import PlannerError, generate_group_plans
+from config import get_settings
 from database import db
 from services.errors import BadRequestError, NotFoundError, UpstreamServiceError
 from services.group_access import require_active_group_member, require_group_lead
 
 VOTING_WINDOW_HOURS = 24
 DEFAULT_EVENT_OFFSET_DAYS = 7
+RECENT_VENUE_LIMIT = 40
+
+REFINEMENT_DESCRIPTOR_GUIDANCE: dict[str, str] = {
+    "budget_friendly": "Prefer lower cost and better value options.",
+    "short_travel": "Minimize travel time and distance for most members.",
+    "more_active": "Bias toward higher-energy, activity-heavy options.",
+    "more_chill": "Bias toward calmer, conversation-friendly options.",
+    "indoor": "Prefer indoor or weather-safe venues.",
+    "outdoor": "Prefer outdoor options when feasible.",
+    "food_focused": "Favor food-centric experiences.",
+    "accessible": "Prioritize easy-access, low-friction logistics.",
+}
 
 
 def _parse_rankings(raw_rankings: str | list[str] | None) -> list[str]:
@@ -39,13 +50,83 @@ def _first_choice_counts(votes: list) -> dict[str, int]:
     return counts
 
 
-def _build_refinement_notes(votes: list) -> str:
+def _clamp_novelty_target(value: float, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(1.0, parsed))
+
+
+def _normalize_refinement_descriptors(descriptors: list[str] | None) -> list[str]:
+    if not descriptors:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in descriptors:
+        token = str(raw or "").strip().lower()
+        if not token or token in seen or token not in REFINEMENT_DESCRIPTOR_GUIDANCE:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
+
+
+def _descriptor_guidance(descriptors: list[str]) -> list[str]:
+    return [REFINEMENT_DESCRIPTOR_GUIDANCE[d] for d in descriptors if d in REFINEMENT_DESCRIPTOR_GUIDANCE]
+
+
+def _build_refinement_notes(
+    votes: list,
+    descriptors: list[str] | None = None,
+    lead_note: str | None = None,
+) -> str:
     first_choice_counts = _first_choice_counts(votes)
     notes: list[str] = []
     for vote in votes:
         if vote["notes"]:
             notes.append(str(vote["notes"]))
-    return json.dumps({"first_choice_counts": first_choice_counts, "notes": notes[:10]})
+    normalized_descriptors = _normalize_refinement_descriptors(descriptors)
+    return json.dumps(
+        {
+            "first_choice_counts": first_choice_counts,
+            "notes": notes[:10],
+            "descriptors": normalized_descriptors,
+            "descriptor_guidance": _descriptor_guidance(normalized_descriptors),
+            "lead_note": (lead_note or "").strip(),
+        }
+    )
+
+
+async def _fetch_recent_venue_names(group_id: UUID, limit: int = RECENT_VENUE_LIMIT) -> list[str]:
+    rows = await db.fetch(
+        """
+        SELECT COALESCE(NULLIF(TRIM(p.venue_name), ''), NULLIF(TRIM(p.title), '')) AS venue
+        FROM plans p
+        JOIN plan_rounds pr ON pr.id = p.plan_round_id
+        WHERE pr.group_id = $1
+        ORDER BY p.created_at DESC
+        LIMIT $2
+        """,
+        group_id,
+        limit,
+    )
+    venues: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        venue = row["venue"]
+        if not venue:
+            continue
+        venue_s = str(venue).strip()
+        if not venue_s:
+            continue
+        key = venue_s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        venues.append(venue_s)
+    return venues
 
 
 async def _insert_generated_plans(
@@ -114,9 +195,22 @@ async def generate_plans(group_id: UUID, user_id: UUID) -> dict[str, object]:
     )
 
     round_id, _, voting_deadline = await _create_generation_round(group_id)
+    settings = get_settings()
+    novelty_target = _clamp_novelty_target(
+        settings.planner_novelty_target_generate,
+        default=0.7,
+    )
+    prior_venues = await _fetch_recent_venue_names(group_id)
 
     try:
-        generated = await generate_group_plans(group_id)
+        generated = await generate_group_plans(
+            group_id,
+            planning_constraints={
+                "plan_mode": "generate",
+                "novelty_target": novelty_target,
+                "prior_venues": prior_venues,
+            },
+        )
         plans_data = await _insert_generated_plans(round_id, generated)
         await db.execute("UPDATE plan_rounds SET status = 'voting_open' WHERE id = $1", round_id)
     except PlannerError as exc:
@@ -266,7 +360,13 @@ async def get_voting_results(
     }
 
 
-async def refine_plans(group_id: UUID, round_id: UUID, user_id: UUID) -> dict[str, object]:
+async def refine_plans(
+    group_id: UUID,
+    round_id: UUID,
+    user_id: UUID,
+    descriptors: list[str] | None = None,
+    lead_note: str | None = None,
+) -> dict[str, object]:
     await require_active_group_member(group_id, user_id)
     await require_group_lead(group_id, user_id, detail="Only group lead can refine")
 
@@ -288,12 +388,30 @@ async def refine_plans(group_id: UUID, round_id: UUID, user_id: UUID) -> dict[st
         "SELECT rankings, notes FROM votes WHERE plan_round_id = $1",
         round_id,
     )
-    refinement_notes = _build_refinement_notes(vote_rows)
+    normalized_descriptors = _normalize_refinement_descriptors(descriptors)
+    refinement_notes = _build_refinement_notes(
+        vote_rows,
+        descriptors=normalized_descriptors,
+        lead_note=lead_note,
+    )
+    settings = get_settings()
+    novelty_target = _clamp_novelty_target(
+        settings.planner_novelty_target_refine,
+        default=0.35,
+    )
+    prior_venues = await _fetch_recent_venue_names(group_id)
 
     try:
         generated = await generate_group_plans(
             group_id,
             refinement_notes=refinement_notes,
+            planning_constraints={
+                "plan_mode": "refine",
+                "novelty_target": novelty_target,
+                "prior_venues": prior_venues,
+                "refinement_descriptors": normalized_descriptors,
+                "refinement_focus_note": (lead_note or "").strip(),
+            },
         )
         plans_data = await _insert_generated_plans(new_round_id, generated)
         await db.execute(
@@ -383,4 +501,3 @@ async def finalize_plan(group_id: UUID, round_id: UUID, user_id: UUID) -> dict[s
         "plan_title": plan["title"],
         "event_date": event_row["event_date"].isoformat(),
     }
-

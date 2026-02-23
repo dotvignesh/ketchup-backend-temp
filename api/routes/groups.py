@@ -1,5 +1,3 @@
-# api/routes/groups.py
-
 """Group controllers (HTTP layer)."""
 
 from uuid import UUID

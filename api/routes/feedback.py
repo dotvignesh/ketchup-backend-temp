@@ -1,5 +1,3 @@
-# api/routes/feedback.py
-
 """Post-event feedback routes."""
 
 from uuid import UUID

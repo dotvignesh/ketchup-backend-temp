@@ -1,5 +1,3 @@
-# config/__init__.py
-
 """Configuration management."""
 
 from config.settings import get_settings

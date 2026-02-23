@@ -1,5 +1,3 @@
-# api/main.py
-
 """FastAPI application entry point."""
 
 import asyncio
@@ -27,17 +25,13 @@ from utils.invite_expiry import expire_stale_invites_loop
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
     await db.connect()
     await init_planner_client()
 
-    # Start the invite expiry cron as a background task.
-    # Runs every 5 minutes, expires pending invites older than 24 hours.
     expiry_task = asyncio.create_task(expire_stale_invites_loop())
 
     yield
 
-    # Clean shutdown: cancel cron before disconnecting DB
     expiry_task.cancel()
     try:
         await expiry_task
@@ -49,7 +43,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Ketchup API",
-    description="AI-powered social coordination platform",
+    description="Group planning backend API",
     version="0.1.0",
     lifespan=lifespan,
 )

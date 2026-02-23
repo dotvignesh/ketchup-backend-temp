@@ -1,5 +1,3 @@
-# database/connection.py
-
 """Database connection and session management."""
 
 from contextlib import asynccontextmanager

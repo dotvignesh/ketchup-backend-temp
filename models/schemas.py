@@ -1,5 +1,3 @@
-# models/schemas.py
-
 """Pydantic schemas for API request/response."""
 
 from datetime import datetime
@@ -104,6 +102,11 @@ class PlanRoundResponse(BaseModel):
 class VoteRequest(BaseModel):
     rankings: list[UUID]
     notes: Optional[str] = None
+
+
+class RefinePlansRequest(BaseModel):
+    descriptors: list[str] = []
+    lead_note: Optional[str] = None
 
 
 # Availability

@@ -1,5 +1,3 @@
-# api/dependencies.py
-
 """Shared API dependencies."""
 
 import secrets

@@ -1,13 +1,11 @@
-# api/routes/plans.py
-
 """Plan controllers (HTTP layer)."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 
 from api.dependencies import get_current_user_id
-from models.schemas import VoteRequest
+from models.schemas import RefinePlansRequest, VoteRequest
 from services import plans_service
 
 router = APIRouter(prefix="/api/groups", tags=["plans"])
@@ -67,12 +65,15 @@ async def get_voting_results(
 async def refine_plans(
     group_id: UUID,
     round_id: UUID,
+    body: RefinePlansRequest | None = Body(default=None),
     user_id: UUID = Depends(get_current_user_id),
 ):
     return await plans_service.refine_plans(
         group_id=group_id,
         round_id=round_id,
         user_id=user_id,
+        descriptors=(body.descriptors if body else None),
+        lead_note=(body.lead_note if body else None),
     )
 
 
@@ -87,4 +88,3 @@ async def finalize_plan(
         round_id=round_id,
         user_id=user_id,
     )
-

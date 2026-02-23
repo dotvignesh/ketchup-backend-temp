@@ -1,13 +1,12 @@
-# agents/planning.py
-
 """Canonical planning agent orchestration with vLLM tool-calling."""
 
 import ast
 import json
 import logging
+from math import ceil
 import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -198,15 +197,6 @@ async def _call_vllm_chat(messages: list[dict[str, Any]], **kwargs):
     client = _get_planner_client()
     settings = get_settings()
 
-    # llama.cpp's OpenAI shim can ignore max_tokens in some paths; n_predict enforces output cap.
-    max_tokens = kwargs.get("max_tokens")
-    raw_extra_body = kwargs.pop("extra_body", None)
-    extra_body = raw_extra_body if isinstance(raw_extra_body, dict) else {}
-    if isinstance(max_tokens, int) and max_tokens > 0 and "n_predict" not in extra_body:
-        extra_body["n_predict"] = max_tokens
-    if extra_body:
-        kwargs["extra_body"] = extra_body
-
     return await client.chat.completions.create(
         model=settings.vllm_model,
         messages=messages,
@@ -216,7 +206,7 @@ async def _call_vllm_chat(messages: list[dict[str, Any]], **kwargs):
 
 def _strip_code_fence(text: str) -> str:
     candidate = text.strip()
-    # Qwen/llama.cpp can emit reasoning traces; remove them before JSON parsing.
+    # Some model outputs include reasoning traces; remove them before JSON parsing.
     candidate = re.sub(r"<think>.*?</think>", "", candidate, flags=re.DOTALL | re.IGNORECASE).strip()
     if candidate.startswith("```"):
         candidate = re.sub(r"^```[a-zA-Z0-9_\-]*", "", candidate).strip()
@@ -310,6 +300,71 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _clamp_novelty_target(value: Any, default: float = 0.5) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(1.0, parsed))
+
+
+def _normalize_venue_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text)
+
+
+def _prior_venue_set(prior_venues: list[str] | None) -> set[str]:
+    if not prior_venues:
+        return set()
+    return {
+        token
+        for token in (_normalize_venue_token(v) for v in prior_venues)
+        if token
+    }
+
+
+def _select_with_novelty(
+    items: list[dict[str, Any]],
+    prior_venues: list[str] | None,
+    novelty_target: float,
+    label_getter: Callable[[dict[str, Any]], str],
+    max_items: int = 5,
+) -> list[dict[str, Any]]:
+    if not items:
+        return []
+
+    prior_set = _prior_venue_set(prior_venues)
+    required_novel = min(max_items, int(ceil(max_items * _clamp_novelty_target(novelty_target))))
+
+    novel: list[dict[str, Any]] = []
+    repeated: list[dict[str, Any]] = []
+    for item in items:
+        label = _normalize_venue_token(label_getter(item))
+        if label and label in prior_set:
+            repeated.append(item)
+        else:
+            novel.append(item)
+
+    selected: list[dict[str, Any]] = []
+    selected.extend(novel[:required_novel])
+
+    for item in [*novel[required_novel:], *repeated]:
+        if len(selected) >= max_items:
+            break
+        selected.append(item)
+
+    if len(selected) < max_items:
+        for item in items:
+            if len(selected) >= max_items:
+                break
+            if item not in selected:
+                selected.append(item)
+
+    return selected[:max_items]
 
 
 def _normalize_plan(raw: dict[str, Any], idx: int) -> dict[str, Any]:
@@ -554,13 +609,14 @@ def _extract_places_from_tool_messages(tool_messages: list[dict[str, Any]]) -> l
     return places
 
 
-def _build_maps_grounded_fallback_plans(
+def _build_maps_grounded_fallback_plans_from_places(
     context: dict[str, Any],
-    tool_messages: list[dict[str, Any]],
+    places: list[dict[str, Any]],
     reason: str,
     refinement_notes: str | None = None,
+    prior_venues: list[str] | None = None,
+    novelty_target: float = 0.5,
 ) -> list[dict[str, Any]] | None:
-    places = _extract_places_from_tool_messages(tool_messages)
     if not places:
         return None
 
@@ -572,13 +628,22 @@ def _build_maps_grounded_fallback_plans(
     ]
     reason_short = reason[:180]
     refinement_short = (refinement_notes or "")[:240]
+    prior_set = _prior_venue_set(prior_venues)
+    selected_places = _select_with_novelty(
+        items=places,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+        label_getter=lambda place: str(place.get("name") or ""),
+        max_items=5,
+    )
 
     plans: list[dict[str, Any]] = []
-    for idx, place in enumerate(places[:5]):
+    for idx, place in enumerate(selected_places):
         venue_name = place["name"] or f"Local Option {idx + 1}"
         location = place["address"] or base_location
         rating = place.get("rating")
         rating_text = f" Rated {rating}/5." if rating is not None else ""
+        venue_token = _normalize_venue_token(venue_name)
         plans.append(
             {
                 "title": venue_name,
@@ -593,6 +658,8 @@ def _build_maps_grounded_fallback_plans(
                     "reason": reason_short,
                     "refinement_notes": refinement_short,
                     "members": member_names,
+                    "novelty_target": _clamp_novelty_target(novelty_target),
+                    "is_novel": bool(venue_token) and venue_token not in prior_set,
                     "venue": place,
                 },
             }
@@ -610,6 +677,25 @@ def _build_maps_grounded_fallback_plans(
             plans.append(plan)
 
     return plans[:5]
+
+
+def _build_maps_grounded_fallback_plans(
+    context: dict[str, Any],
+    tool_messages: list[dict[str, Any]],
+    reason: str,
+    refinement_notes: str | None = None,
+    prior_venues: list[str] | None = None,
+    novelty_target: float = 0.5,
+) -> list[dict[str, Any]] | None:
+    places = _extract_places_from_tool_messages(tool_messages)
+    return _build_maps_grounded_fallback_plans_from_places(
+        context=context,
+        places=places,
+        reason=reason,
+        refinement_notes=refinement_notes,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+    )
 
 
 def _extract_web_results_from_tool_messages(
@@ -666,6 +752,8 @@ def _build_web_grounded_fallback_plans(
     web_results: list[dict[str, Any]],
     reason: str,
     refinement_notes: str | None = None,
+    prior_venues: list[str] | None = None,
+    novelty_target: float = 0.5,
 ) -> list[dict[str, Any]] | None:
     if not web_results:
         return None
@@ -677,12 +765,21 @@ def _build_web_grounded_fallback_plans(
     ]
     reason_short = reason[:180]
     refinement_short = (refinement_notes or "")[:240]
+    prior_set = _prior_venue_set(prior_venues)
+    selected_results = _select_with_novelty(
+        items=web_results,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+        label_getter=lambda result: str(result.get("title") or ""),
+        max_items=5,
+    )
 
     plans: list[dict[str, Any]] = []
-    for idx, result in enumerate(web_results[:5]):
+    for idx, result in enumerate(selected_results):
         title = result.get("title") or f"Web Option {idx + 1}"
         snippet = result.get("snippet") or "Candidate discovered from web search."
         source = result.get("source") or result.get("link") or "web"
+        title_token = _normalize_venue_token(title)
         plans.append(
             {
                 "title": str(title)[:120],
@@ -697,6 +794,8 @@ def _build_web_grounded_fallback_plans(
                     "reason": reason_short,
                     "refinement_notes": refinement_short,
                     "members": member_names,
+                    "novelty_target": _clamp_novelty_target(novelty_target),
+                    "is_novel": bool(title_token) and title_token not in prior_set,
                     "reference": {
                         "title": result.get("title"),
                         "link": result.get("link"),
@@ -723,6 +822,7 @@ def _build_web_grounded_fallback_plans(
 def _build_web_fallback_queries(
     context: dict[str, Any],
     refinement_notes: str | None = None,
+    refinement_descriptors: list[str] | None = None,
 ) -> list[str]:
     activity_seeds: list[str] = []
     seen = set()
@@ -750,7 +850,122 @@ def _build_web_fallback_queries(
     if refinement_notes:
         activity_seeds.append("activities matching group voting feedback")
 
+    descriptor_seeds = {
+        "budget_friendly": "affordable activities",
+        "short_travel": "activities close to downtown",
+        "more_active": "active group activities",
+        "more_chill": "quiet hangout spots",
+        "indoor": "indoor activities",
+        "outdoor": "outdoor activities",
+        "food_focused": "group dining experiences",
+        "accessible": "easy access group activities",
+    }
+    for descriptor in refinement_descriptors or []:
+        seed = descriptor_seeds.get(descriptor)
+        if seed:
+            activity_seeds.append(seed)
+
     return [f"{seed} for friends" for seed in activity_seeds[:3]]
+
+
+def _build_maps_fallback_queries(
+    context: dict[str, Any],
+    refinement_notes: str | None = None,
+    refinement_descriptors: list[str] | None = None,
+) -> list[str]:
+    activity_seeds: list[str] = []
+    seen = set()
+    for member in context["members"]:
+        likes = member.get("activity_likes") or []
+        if not isinstance(likes, list):
+            continue
+        for like in likes:
+            like_s = str(like).strip()
+            if not like_s:
+                continue
+            key = like_s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            activity_seeds.append(like_s)
+            if len(activity_seeds) >= 4:
+                break
+        if len(activity_seeds) >= 4:
+            break
+
+    if not activity_seeds:
+        activity_seeds = ["group activities", "casual dinner", "indoor activities"]
+
+    if refinement_notes:
+        activity_seeds.append("activities matching group voting feedback")
+
+    descriptor_seeds = {
+        "budget_friendly": "cheap eats",
+        "short_travel": "near city center",
+        "more_active": "sports activity",
+        "more_chill": "cafe",
+        "indoor": "indoor activity",
+        "outdoor": "outdoor park activity",
+        "food_focused": "restaurant",
+        "accessible": "easy access venue",
+    }
+    for descriptor in refinement_descriptors or []:
+        seed = descriptor_seeds.get(descriptor)
+        if seed:
+            activity_seeds.append(seed)
+
+    return activity_seeds[:4]
+
+
+async def _run_deterministic_maps_fallback_search(
+    context: dict[str, Any],
+    refinement_notes: str | None = None,
+    refinement_descriptors: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    base_location = _base_location_from_context(context)
+    queries = _build_maps_fallback_queries(
+        context,
+        refinement_notes=refinement_notes,
+        refinement_descriptors=refinement_descriptors,
+    )
+    places: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    errors: list[str] = []
+
+    for query in queries:
+        payload = await _search_places(query=query, location=base_location, max_results=4)
+        if payload.get("error"):
+            details = str(payload.get("details") or payload["error"])
+            errors.append(f"{payload['error']} ({details[:120]})")
+            continue
+
+        raw_places = payload.get("places")
+        if not isinstance(raw_places, list):
+            continue
+
+        for item in raw_places:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            address = str(item.get("address") or "").strip()
+            if not name and not address:
+                continue
+            key = (name.lower(), address.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            places.append(
+                {
+                    "name": name,
+                    "address": address,
+                    "rating": item.get("rating"),
+                    "price_level": item.get("price_level"),
+                }
+            )
+            if len(places) >= 8:
+                return places, errors
+
+    return places, errors
 
 
 def _summarize_tool_results(tool_messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -850,6 +1065,10 @@ def _build_prompt(
     refinement_notes: str | None = None,
     require_tool_grounding: bool = True,
     web_search_enabled: bool = False,
+    novelty_target: float = 0.5,
+    prior_venues: list[str] | None = None,
+    refinement_descriptors: list[str] | None = None,
+    refinement_focus_note: str | None = None,
 ) -> str:
     member_lines = "\n".join(_format_member(m) for m in context["members"])
 
@@ -864,6 +1083,33 @@ def _build_prompt(
     refinement_block = ""
     if refinement_notes:
         refinement_block = f"\nVoting feedback to consider:\n{refinement_notes}\n"
+
+    descriptor_block = ""
+    descriptors = [str(d).strip() for d in (refinement_descriptors or []) if str(d).strip()]
+    if descriptors:
+        descriptor_block = (
+            "\nRefinement descriptors selected by lead:\n"
+            + "\n".join(f"- {descriptor}" for descriptor in descriptors)
+            + "\n"
+        )
+
+    lead_focus_block = ""
+    if refinement_focus_note:
+        lead_focus_block = f"\nLead focus note:\n{str(refinement_focus_note).strip()}\n"
+
+    novelty_pct = int(round(_clamp_novelty_target(novelty_target) * 100))
+    novelty_block = (
+        f"Novelty target: aim for at least {novelty_pct}% of plans using venues/ideas "
+        "not in the prior venue list when feasible."
+    )
+
+    prior_venues_block = ""
+    if prior_venues:
+        prior_venues_block = (
+            "\nPrior venues to avoid repeating unless necessary:\n"
+            + "\n".join(f"- {venue}" for venue in prior_venues[:25])
+            + "\n"
+        )
 
     if require_tool_grounding:
         grounding_block = (
@@ -898,7 +1144,11 @@ Members:
 Recent events:
 {history_lines}
 {refinement_block}
+{descriptor_block}
+{lead_focus_block}
+{prior_venues_block}
 Generate exactly 5 plans with these vibe types in order: anchor, pivot, reach, chill, wildcard.
+{novelty_block}
 {grounding_block}
 
 Return strict JSON with this schema:
@@ -1082,9 +1332,14 @@ async def _web_search(
 async def _run_deterministic_web_fallback_search(
     context: dict[str, Any],
     refinement_notes: str | None = None,
+    refinement_descriptors: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     base_location = _base_location_from_context(context)
-    queries = _build_web_fallback_queries(context, refinement_notes=refinement_notes)
+    queries = _build_web_fallback_queries(
+        context,
+        refinement_notes=refinement_notes,
+        refinement_descriptors=refinement_descriptors,
+    )
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     errors: list[str] = []
@@ -1122,12 +1377,15 @@ async def _build_web_fallback_if_available(
     reason: str,
     refinement_notes: str | None,
     enabled: bool,
+    prior_venues: list[str] | None = None,
+    novelty_target: float = 0.5,
+    refinement_descriptors: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
     if not enabled:
         return None, []
 
     tool_summary = _summarize_tool_results(tool_messages)
-    maps_empty = tool_summary["place_calls"] > 0 and tool_summary["place_results"] == 0
+    maps_empty = tool_summary["place_results"] == 0
 
     web_results = _extract_web_results_from_tool_messages(tool_messages)
     web_errors: list[str] = []
@@ -1135,6 +1393,7 @@ async def _build_web_fallback_if_available(
         web_results, web_errors = await _run_deterministic_web_fallback_search(
             context=context,
             refinement_notes=refinement_notes,
+            refinement_descriptors=refinement_descriptors,
         )
 
     plans = _build_web_grounded_fallback_plans(
@@ -1142,8 +1401,63 @@ async def _build_web_fallback_if_available(
         web_results=web_results,
         reason=reason,
         refinement_notes=refinement_notes,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
     )
     return plans, web_errors
+
+
+async def _synthesize_grounded_fallback_plans(
+    context: dict[str, Any],
+    tool_messages: list[dict[str, Any]],
+    reason: str,
+    refinement_notes: str | None,
+    web_search_enabled: bool,
+    prior_venues: list[str] | None = None,
+    novelty_target: float = 0.5,
+    refinement_descriptors: list[str] | None = None,
+) -> tuple[list[dict[str, Any]] | None, list[str]]:
+    synthesized = _build_maps_grounded_fallback_plans(
+        context=context,
+        tool_messages=tool_messages,
+        reason=reason,
+        refinement_notes=refinement_notes,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+    )
+    if synthesized:
+        return synthesized, []
+
+    deterministic_places, map_errors = await _run_deterministic_maps_fallback_search(
+        context=context,
+        refinement_notes=refinement_notes,
+        refinement_descriptors=refinement_descriptors,
+    )
+    synthesized = _build_maps_grounded_fallback_plans_from_places(
+        context=context,
+        places=deterministic_places,
+        reason=reason,
+        refinement_notes=refinement_notes,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+    )
+    if synthesized:
+        return synthesized, map_errors
+
+    web_synthesized, web_errors = await _build_web_fallback_if_available(
+        context=context,
+        tool_messages=tool_messages,
+        reason=reason,
+        refinement_notes=refinement_notes,
+        enabled=web_search_enabled,
+        prior_venues=prior_venues,
+        novelty_target=novelty_target,
+        refinement_descriptors=refinement_descriptors,
+    )
+    if web_synthesized:
+        return web_synthesized, [*map_errors, *web_errors]
+
+    return None, [*map_errors, *web_errors]
 
 
 async def _get_directions(
@@ -1268,10 +1582,11 @@ async def _run_tool_loop(
     consecutive_all_error_rounds = 0
 
     for _ in range(max_rounds):
+        # Do not force tool_choice="auto": some OpenAI-compatible servers reject it.
+        # Passing tools alone keeps behavior compatible across vLLM versions.
         response = await _call_vllm_chat(
             messages=work_messages,
             tools=tools,
-            tool_choice="auto",
             temperature=0.2,
             max_tokens=MAX_COMPLETION_TOKENS,
         )
@@ -1392,10 +1707,27 @@ async def _run_structured_retry(
 async def generate_group_plans(
     group_id: UUID,
     refinement_notes: str | None = None,
+    planning_constraints: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate and normalize 5 plans for a group using vLLM tool-calling."""
     context = await _load_group_context(group_id)
     settings = get_settings()
+    constraints = planning_constraints if isinstance(planning_constraints, dict) else {}
+    novelty_target = _clamp_novelty_target(
+        constraints.get("novelty_target"),
+        default=0.35 if refinement_notes else 0.7,
+    )
+    prior_venues = [
+        str(venue).strip()
+        for venue in (constraints.get("prior_venues") or [])
+        if str(venue).strip()
+    ]
+    refinement_descriptors = [
+        str(descriptor).strip().lower()
+        for descriptor in (constraints.get("refinement_descriptors") or [])
+        if str(descriptor).strip()
+    ]
+    refinement_focus_note = str(constraints.get("refinement_focus_note") or "").strip()
     use_tool_grounding = bool(settings.google_maps_api_key.strip())
     use_web_search = bool(settings.tavily_api_key.strip())
     tools = (
@@ -1411,6 +1743,10 @@ async def generate_group_plans(
         refinement_notes=refinement_notes,
         require_tool_grounding=use_tool_grounding,
         web_search_enabled=use_web_search,
+        novelty_target=novelty_target,
+        prior_venues=prior_venues,
+        refinement_descriptors=refinement_descriptors,
+        refinement_focus_note=refinement_focus_note,
     )
 
     try:
@@ -1422,13 +1758,43 @@ async def generate_group_plans(
                 group_id,
                 "enabled" if use_web_search else "disabled",
             )
-            output, tool_messages = await _run_tool_loop(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=tools,
-            )
+            try:
+                output, tool_messages = await _run_tool_loop(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    tools=tools,
+                )
+            except Exception as tool_exc:
+                logger.warning(
+                    "Planner tool loop failed for group %s (%s: %s); "
+                    "attempting deterministic grounded fallback.",
+                    group_id,
+                    tool_exc.__class__.__name__,
+                    tool_exc,
+                )
+                synthesized, grounded_errors = await _synthesize_grounded_fallback_plans(
+                    context=context,
+                    tool_messages=tool_messages,
+                    reason=f"Tool loop failed: {tool_exc.__class__.__name__}: {tool_exc}",
+                    refinement_notes=refinement_notes,
+                    web_search_enabled=use_web_search,
+                    prior_venues=prior_venues,
+                    novelty_target=novelty_target,
+                    refinement_descriptors=refinement_descriptors,
+                )
+                if synthesized:
+                    logger.warning(
+                        "Planner tool loop failed for group %s; using deterministic grounded fallback.",
+                        group_id,
+                    )
+                    return synthesized
+                details = " | ".join(grounded_errors[:2]) if grounded_errors else str(tool_exc)
+                raise PlannerError(
+                    f"Tool-grounded planning failed before model output ({details})"
+                ) from tool_exc
+
             tool_summary = _summarize_tool_results(tool_messages)
             logger.warning(
                 "Planner tool summary for group %s: calls=%s place_calls=%s place_results=%s "
@@ -1460,41 +1826,51 @@ async def generate_group_plans(
             parse_message = str(parse_exc)
             if use_tool_grounding and "no plans" in parse_message.lower():
                 tool_summary = _summarize_tool_results(tool_messages)
-                synthesized = _build_maps_grounded_fallback_plans(
+                synthesized, grounded_errors = await _synthesize_grounded_fallback_plans(
                     context=context,
                     tool_messages=tool_messages,
                     reason=f"LLM produced empty plans: {parse_message}",
                     refinement_notes=refinement_notes,
+                    web_search_enabled=use_web_search,
+                    prior_venues=prior_venues,
+                    novelty_target=novelty_target,
+                    refinement_descriptors=refinement_descriptors,
                 )
                 if synthesized:
                     logger.warning(
-                        "Planner returned no plans for group %s; using maps-grounded fallback synthesis.",
+                        "Planner returned no plans for group %s; using deterministic grounded fallback synthesis.",
                         group_id,
                     )
                     return synthesized
-                web_synthesized, web_errors = await _build_web_fallback_if_available(
-                    context=context,
-                    tool_messages=tool_messages,
-                    reason=f"LLM produced empty plans: {parse_message}",
-                    refinement_notes=refinement_notes,
-                    enabled=use_web_search,
-                )
-                if web_synthesized:
-                    logger.warning(
-                        "Planner returned no plans for group %s; using web-grounded fallback synthesis.",
-                        group_id,
+                details_parts: list[str] = []
+                if tool_summary["errors"]:
+                    details_parts.append("; ".join(tool_summary["errors"][:2]))
+                if grounded_errors:
+                    details_parts.append("; ".join(grounded_errors[:2]))
+                details = " | ".join(details_parts) or "no usable grounded venues were returned"
+                raise PlannerError(
+                    f"LLM returned no plans and map search produced no usable venues ({details})"
+                ) from parse_exc
+
+            if use_tool_grounding:
+                tool_summary = _summarize_tool_results(tool_messages)
+                if tool_summary["place_results"] > 0 or tool_summary["web_results"] > 0:
+                    synthesized, _ = await _synthesize_grounded_fallback_plans(
+                        context=context,
+                        tool_messages=tool_messages,
+                        reason=f"LLM parse failed: {parse_message}",
+                        refinement_notes=refinement_notes,
+                        web_search_enabled=use_web_search,
+                        prior_venues=prior_venues,
+                        novelty_target=novelty_target,
+                        refinement_descriptors=refinement_descriptors,
                     )
-                    return web_synthesized
-                if tool_summary["place_calls"] > 0 and tool_summary["place_results"] == 0:
-                    details_parts: list[str] = []
-                    if tool_summary["errors"]:
-                        details_parts.append("; ".join(tool_summary["errors"][:2]))
-                    if web_errors:
-                        details_parts.append("; ".join(web_errors[:2]))
-                    details = " | ".join(details_parts) or "search_places returned zero results"
-                    raise PlannerError(
-                        f"LLM returned no plans and map search produced no usable venues ({details})"
-                    ) from parse_exc
+                    if synthesized:
+                        logger.warning(
+                            "Planner parse failed for group %s; using deterministic grounded fallback synthesis.",
+                            group_id,
+                        )
+                        return synthesized
 
             snippet = _strip_code_fence(output)[:800].replace("\n", "\\n")
             logger.warning(
@@ -1521,31 +1897,22 @@ async def generate_group_plans(
                 return _extract_plans(repaired)
             except PlannerError as repaired_exc:
                 if use_tool_grounding:
-                    synthesized = _build_maps_grounded_fallback_plans(
+                    synthesized, _ = await _synthesize_grounded_fallback_plans(
                         context=context,
                         tool_messages=tool_messages,
                         reason=f"Structured retry failed: {repaired_exc}",
                         refinement_notes=refinement_notes,
+                        web_search_enabled=use_web_search,
+                        prior_venues=prior_venues,
+                        novelty_target=novelty_target,
+                        refinement_descriptors=refinement_descriptors,
                     )
                     if synthesized:
                         logger.warning(
-                            "Structured retry failed for group %s; using maps-grounded fallback synthesis.",
+                            "Structured retry failed for group %s; using deterministic grounded fallback synthesis.",
                             group_id,
                         )
                         return synthesized
-                    web_synthesized, _ = await _build_web_fallback_if_available(
-                        context=context,
-                        tool_messages=tool_messages,
-                        reason=f"Structured retry failed: {repaired_exc}",
-                        refinement_notes=refinement_notes,
-                        enabled=use_web_search,
-                    )
-                    if web_synthesized:
-                        logger.warning(
-                            "Structured retry failed for group %s; using web-grounded fallback synthesis.",
-                            group_id,
-                        )
-                        return web_synthesized
                 raise
     except Exception as exc:
         if settings.planner_fallback_enabled:

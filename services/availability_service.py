@@ -1,5 +1,3 @@
-# services/availability_service.py
-
 """Availability domain service."""
 
 from __future__ import annotations

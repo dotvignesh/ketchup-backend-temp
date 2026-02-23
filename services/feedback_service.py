@@ -1,5 +1,3 @@
-# services/feedback_service.py
-
 """Feedback domain service."""
 
 from __future__ import annotations

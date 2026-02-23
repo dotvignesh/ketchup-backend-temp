@@ -1,5 +1,3 @@
-# services/errors.py
-
 """Shared domain-level service exceptions."""
 
 

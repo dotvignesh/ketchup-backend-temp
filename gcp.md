@@ -1,115 +1,84 @@
-# Qwen3-4B-Instruct-2507 on Cloud Run (L4 GPU) with vLLM + Tool Calling (Maps + Web Search)
+# GCP Deployment (Backend + vLLM)
 
-## 0) Vars
-```bash
-export PROJECT_ID="$(gcloud config get-value project)"
-export REGION="us-east4"                   # use your region
-export SERVICE_NAME="qwen3-4b-2507-vllm-tools"
-export RUN_SA_EMAIL="YOUR_RUN_SA@${PROJECT_ID}.iam.gserviceaccount.com"
-export AR_REPO_NAME="qwen3-vllm-repo"
-export IMAGE_NAME="qwen3-4b-2507-vllm-tools"
-```
+This project deploys as two services:
+- `ketchup-backend` (FastAPI application)
+- `ketchup-vllm` (OpenAI-compatible vLLM inference)
 
-## 1) Enable APIs
+## 1) Required APIs
 
 ```bash
-gcloud services enable run.googleapis.com \
+gcloud services enable \
+  run.googleapis.com \
   cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
   secretmanager.googleapis.com \
-  artifactregistry.googleapis.com
+  sqladmin.googleapis.com
 ```
 
-## 2) Create secrets (HF + Maps + Web Search)
+## 2) Secrets
+
+Create secrets used by backend and/or vLLM:
 
 ```bash
-printf "%s" "$HF_TOKEN" | gcloud secrets create HF_TOKEN --data-file=-
-printf "%s" "$MAPS_API_KEY" | gcloud secrets create MAPS_API_KEY --data-file=-
-printf "%s" "$TAVILY_API_KEY" | gcloud secrets create TAVILY_API_KEY --data-file=-
+printf "%s" "$GOOGLE_MAPS_API_KEY" | gcloud secrets create GOOGLE_MAPS_API_KEY --data-file=-
+printf "%s" "$TAVILY_API_KEY"      | gcloud secrets create TAVILY_API_KEY --data-file=-
+printf "%s" "$VLLM_API_KEY"        | gcloud secrets create VLLM_API_KEY --data-file=-
+printf "%s" "$HF_TOKEN"            | gcloud secrets create HF_TOKEN --data-file=-
 ```
 
-## 3) Artifact Registry repo
+## 3) Deploy vLLM Service
+
+Deploy vLLM as its own Cloud Run service with GPU and tool-calling enabled.
+
+Key runtime args:
+- `--enable-auto-tool-choice`
+- `--tool-call-parser hermes` (or parser matching your model/template)
+
+vLLM should expose OpenAI-compatible routes at `/v1/*`.
+
+After deploy, capture URL:
 
 ```bash
-gcloud artifacts repositories create $AR_REPO_NAME \
-  --repository-format=docker \
-  --location=$REGION
+VLLM_URL="$(gcloud run services describe ketchup-vllm --region "$REGION" --format='value(status.url)')"
+echo "$VLLM_URL"
 ```
 
-## 4) Build container (model baked into image)
+## 4) Deploy Backend Service
 
-Create files:
+Set backend env so planner calls vLLM:
+- `VLLM_BASE_URL=${VLLM_URL}/v1`
+- `VLLM_MODEL=<served model name>`
+- `VLLM_API_KEY` (if required by vLLM service)
 
-* `Dockerfile` (base: `vllm/vllm-openai:v0.11.0`, downloads `Qwen/Qwen3-4B-Instruct-2507` into `/model-cache`)
-* `app/entrypoint.sh` (starts vLLM on 127.0.0.1:8000 + FastAPI gateway on 0.0.0.0:8080)
-* `app/main.py` (endpoints: `/healthz`, `/readyz`, `POST /agent`, `POST /v1/chat/completions`)
-* `cloudbuild.yaml` (uses HF_TOKEN as build secret)
+Also set:
+- `DATABASE_URL`
+- `GOOGLE_MAPS_API_KEY`
+- `TAVILY_API_KEY`
+- `BACKEND_INTERNAL_API_KEY`
+- SMTP env vars if invite emails are enabled
 
-Build:
+## 5) Verify
+
+Backend health:
 
 ```bash
-gcloud builds submit --config=cloudbuild.yaml --substitutions=_LOCATION=$REGION
+curl "${BACKEND_URL}/health"
 ```
 
-Set image var:
+vLLM health/models:
 
 ```bash
-export IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO_NAME/$IMAGE_NAME:latest"
+curl "${VLLM_URL}/health"
+curl "${VLLM_URL}/v1/models"
 ```
 
-## 5) Deploy to Cloud Run (YOUR exact command)
+Planner path check:
+- Create or use an existing group.
+- Call backend `POST /api/groups/{group_id}/generate-plans`.
+- Confirm backend logs show planner tool activity and no tool-choice parser errors.
 
-```bash
-gcloud beta run deploy "$SERVICE_NAME" \
-  --image="$IMAGE" \
-  --service-account="$RUN_SA_EMAIL" \
-  --cpu=8 \
-  --memory="32Gi" \
-  --gpu=1 \
-  --gpu-type="nvidia-l4" \
-  --region="$REGION" \
-  --port=8080 \
-  --concurrency=1 \
-  --max-instances=1 \
-  --timeout=3600 \
-  --no-cpu-throttling \
-  --no-gpu-zonal-redundancy \
-  --set-secrets=MAPS_API_KEY=MAPS_API_KEY:latest \
-  --set-secrets=TAVILY_API_KEY=TAVILY_API_KEY:latest \
-  --allow-unauthenticated \
-  --startup-probe "httpGet.path=/readyz,httpGet.port=8080,initialDelaySeconds=240,failureThreshold=10,timeoutSeconds=30,periodSeconds=60"
-```
+## Notes
 
-## 6) Test
-
-Get URL:
-
-```bash
-SERVICE_URL="$(gcloud run services describe $SERVICE_NAME --region $REGION --format='value(status.url)')"
-echo "$SERVICE_URL"
-```
-
-Health:
-
-```bash
-curl "$SERVICE_URL/healthz"
-curl "$SERVICE_URL/readyz"
-```
-
-Agent (IMPORTANT: POST, not GET):
-
-```bash
-curl -X POST "$SERVICE_URL/agent" \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Find 3 ramen places near Times Square with Google Maps links."}'
-```
-
-OpenAI-style:
-
-```bash
-curl -X POST "$SERVICE_URL/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model":"Qwen3-4B-Instruct-2507",
-    "messages":[{"role":"user","content":"hello"}]
-  }'
-```
+- Keep backend and vLLM deployments independent for scaling and release isolation.
+- Backend planner supports any OpenAI-compatible endpoint, but vLLM is the primary target.
+- If tool-calling is disabled on vLLM, backend will fall back to deterministic synthesis paths.

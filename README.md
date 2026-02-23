@@ -1,31 +1,22 @@
 # Ketchup Backend
 
-FastAPI backend for group planning, voting, invites, availability, and post-event feedback.
+FastAPI backend for groups, planning rounds, voting, invites, availability, and feedback.
 
-## Current Architecture
+## Architecture
 
-- `api/routes/*`: thin HTTP controllers
-- `services/*`: business logic and data orchestration
-- `agents/planning.py`: canonical LLM planner (OpenAI-compatible tool-calling)
-- `agents/app/main.py`: deprecated compatibility stub (returns 410 on legacy agent endpoints)
-- `database/*`: asyncpg connection and schema migration SQL
-- `config/settings.py`: environment-based configuration
+- `api/routes/*`: HTTP handlers.
+- `services/*`: business logic and persistence orchestration.
+- `agents/planning.py`: canonical planner orchestration.
+- `database/*`: asyncpg connection and schema SQL.
+- `config/settings.py`: environment-backed settings.
 
-`api/main.py` wires app startup/shutdown:
-- DB pool connect/disconnect
-- planner HTTP client lifecycle
-- background invite-expiry loop
-
-Domain errors raised in services are mapped to HTTP responses through `ServiceError` handling in `api/main.py`.
-
-## Runtime Requirements
+## Requirements
 
 - Python 3.12+
-- PostgreSQL
-- OpenAI-compatible chat completions endpoint for planner (default expects `/v1/chat/completions`)
-- Optional Google Maps server key for tool grounding
+- PostgreSQL 16+
+- OpenAI-compatible chat completions endpoint (vLLM recommended)
 
-Install:
+## Setup
 
 ```bash
 cd ketchup-backend
@@ -33,15 +24,10 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-```
-
-Run:
-
-```bash
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Health:
+Health check:
 
 ```bash
 curl http://localhost:8000/health
@@ -49,26 +35,42 @@ curl http://localhost:8000/health
 
 ## Key Environment Variables
 
+Core:
 - `DATABASE_URL`
-- `VLLM_BASE_URL`
-- `VLLM_MODEL`
-- `VLLM_API_KEY`
-- `PLANNER_FALLBACK_ENABLED`
-- `GOOGLE_MAPS_API_KEY`
-- `TAVILY_API_KEY` (optional; enables web-search fallback)
 - `BACKEND_INTERNAL_API_KEY`
 - `FRONTEND_URL`
+
+Planner:
+- `VLLM_BASE_URL` (OpenAI-compatible base URL, usually ending in `/v1`)
+- `VLLM_MODEL` (model name sent in chat completion requests)
+- `VLLM_API_KEY`
+- `PLANNER_NOVELTY_TARGET_GENERATE` (default `0.7`)
+- `PLANNER_NOVELTY_TARGET_REFINE` (default `0.35`)
+- `PLANNER_FALLBACK_ENABLED`
+
+Tooling:
+- `GOOGLE_MAPS_API_KEY` (Places API New + Routes API)
+- `TAVILY_API_KEY` (optional web-search fallback)
+
+Email:
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`
 
-## Auth Boundary
+## Planner Runtime Contract
 
-Most application routes expect:
-- `X-User-Id` (UUID)
-- optional `X-Internal-Auth` when `BACKEND_INTERNAL_API_KEY` is configured
+- Planner uses OpenAI-compatible chat completions via `VLLM_BASE_URL`.
+- Request shape is vLLM/OpenAI-compatible (no llama.cpp-specific fields).
+- Tool loop does not force `tool_choice="auto"`.
+- For vLLM tool-calling, run server with:
+  - `--enable-auto-tool-choice`
+  - `--tool-call-parser hermes` (or a parser matching your model/template)
 
-In local stack, frontend proxy injects these headers server-side.
+Behavior:
+- With `GOOGLE_MAPS_API_KEY`, planner uses `search_places` and `get_directions`.
+- With `TAVILY_API_KEY`, planner can use `web_search` when map results are insufficient.
+- If model output is empty/unparseable, backend attempts deterministic grounded synthesis.
+- If enabled, generic fallback can be used as last resort.
 
-## API Surface (Current)
+## API Surface
 
 Auth:
 - `POST /api/auth/google-signin`
@@ -98,32 +100,16 @@ Plans:
 - `POST /api/groups/{group_id}/plans/{round_id}/refine`
 - `POST /api/groups/{group_id}/plans/{round_id}/finalize`
 
+Refine request body (optional):
+- `descriptors: string[]`
+- `lead_note: string`
+
 Feedback:
 - `POST /api/groups/{group_id}/events/{event_id}/feedback`
 - `GET /api/groups/{group_id}/events/{event_id}/feedback`
 
-## Planner Behavior (Current)
-
-- Planner calls an OpenAI-compatible model via `VLLM_BASE_URL`.
-- With `GOOGLE_MAPS_API_KEY`, planner uses tool grounding for places and directions.
-- With `TAVILY_API_KEY`, planner enables `web_search` as an optional third tool and
-  uses web-grounded fallback when maps search returns no venues.
-- `web_search` is fallback-oriented; it may not be invoked when maps already returns viable venues.
-- If structured planner output fails, backend can synthesize deterministic maps-grounded plans (`maps_fallback`) from gathered tool results.
-- If maps grounding is empty but web fallback yields candidates, backend can synthesize deterministic `web_fallback` plans.
-- If planner fails and `PLANNER_FALLBACK_ENABLED=true`, generic fallback plans can be returned (`fallback`).
-
-## Validation Commands
+## Validation
 
 ```bash
-python3 -m compileall agents api services
+python3 -m compileall agents api services config models
 ```
-
-Tavily smoke test (inside backend container):
-
-```bash
-docker compose -f ketchup-local/docker-compose.yml exec -T backend env PYTHONPATH=/app \
-  python -c "import asyncio,json; import agents.planning as planning; out=asyncio.run(planning._web_search(query='group activities for friends', location='Boston, MA', max_results=3)); print('ERROR:', out.get('error')); print('RESULT_COUNT:', len(out.get('results', []))); print(json.dumps(out.get('results', [])[:2], indent=2))"
-```
-
-If you use the local Docker stack, prefer running via `ketchup-local/docker-compose.yml`.

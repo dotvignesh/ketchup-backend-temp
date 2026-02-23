@@ -1,6 +1,4 @@
-# api/routes/auth.py
-
-"""Authentication routes — Google OAuth only."""
+"""Authentication routes for Google OAuth."""
 
 from fastapi import APIRouter
 

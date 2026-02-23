@@ -1,5 +1,3 @@
-# api/routes/users.py
-
 """User routes."""
 
 from uuid import UUID

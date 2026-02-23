@@ -1,5 +1,3 @@
-# services/user_service.py
-
 """User domain service."""
 
 from __future__ import annotations

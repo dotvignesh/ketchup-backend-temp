@@ -1,5 +1,3 @@
-# services/group_service.py
-
 """Group domain service (business logic + persistence orchestration)."""
 
 from __future__ import annotations

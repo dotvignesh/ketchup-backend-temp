@@ -1,46 +1,40 @@
 # Ketchup Agents
 
-`agents/planning.py` is the only supported orchestration surface for plan generation.
+`agents/planning.py` is the only supported orchestration surface.
 
 ## Status
 
 - Canonical: `planning.py`
-- Deprecated compatibility stub: `app/main.py`
 
-`app/main.py` intentionally returns `410 Gone` for legacy endpoints (`/agent`,
-`/agent/stream`, `/v1/chat/completions`) to prevent orchestration drift.
+## Planner Capabilities
 
-## Planner Capabilities (`planning.py`)
-
-- OpenAI-compatible tool-calling against `VLLM_BASE_URL`
-- Maps grounding tools:
-  - `search_places` (Places API New)
-  - `get_directions` (Routes API)
-- Optional web-search tool:
-  - `web_search` (enabled only when `TAVILY_API_KEY` is set)
-  - Fallback behavior: used when maps search yields no usable venues
-- Deterministic fallback synthesis:
-  - `maps_fallback` when tool-grounded places are available
-  - `web_fallback` when maps has no venues but web search yields candidates
-  - generic `fallback` when planner fallback is enabled
+- OpenAI-compatible chat completions via `VLLM_BASE_URL`
+- Tool-calling with:
+  - `search_places` (Google Places API New)
+  - `get_directions` (Google Routes API)
+  - `web_search` (Tavily, optional)
+- Deterministic synthesis fallback paths when model output is unusable
+- Novelty controls (separate defaults for generate vs refine)
+- Refine steering via descriptors and optional lead note
 
 ## Environment Variables
 
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| `VLLM_BASE_URL` | `http://localhost:8080/v1` | OpenAI-compatible model endpoint |
-| `VLLM_MODEL` | `Qwen/Qwen3-4B-Instruct` | Model name used for completions |
-| `VLLM_API_KEY` | `EMPTY` | API key for OpenAI-compatible endpoint |
-| `GOOGLE_MAPS_API_KEY` | empty | Enables maps grounding tools |
-| `TAVILY_API_KEY` | empty | Enables optional `web_search` tool/fallback |
+| `VLLM_BASE_URL` | `http://localhost:8080/v1` | OpenAI-compatible endpoint |
+| `VLLM_MODEL` | `Qwen/Qwen3-4B-Instruct-2507` | Model name in completion requests |
+| `VLLM_API_KEY` | `EMPTY` | API key for model endpoint |
+| `GOOGLE_MAPS_API_KEY` | empty | Enables maps tools |
+| `TAVILY_API_KEY` | empty | Enables web-search fallback |
 | `PLANNER_FALLBACK_ENABLED` | `false` | Enables generic non-grounded fallback |
 
-## Notes
+## vLLM Tool-Calling Requirement
 
-- Do not build new product flows on `agents/app/main.py`.
-- Use backend API routes and services that call `agents/planning.py`.
+For tool-calling with vLLM, start server with:
+- `--enable-auto-tool-choice`
+- `--tool-call-parser hermes` (or parser matching your model/template)
 
-## Quick Verification
+## Verification
 
 ```bash
 docker compose -f ketchup-local/docker-compose.yml exec -T backend env PYTHONPATH=/app \

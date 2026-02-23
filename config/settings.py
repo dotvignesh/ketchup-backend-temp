@@ -1,5 +1,3 @@
-# config/settings.py
-
 """Application settings from environment variables."""
 
 from functools import lru_cache
@@ -17,7 +15,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://postgres:postgres@localhost:5433/appdb"
     vllm_base_url: str = "http://localhost:8080/v1"
-    vllm_model: str = "Qwen/Qwen3-4B-Instruct"
+    vllm_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     vllm_api_key: str = "EMPTY"
     vllm_connect_timeout_seconds: float = 10.0
     vllm_read_timeout_seconds: float = 180.0
@@ -25,6 +23,8 @@ class Settings(BaseSettings):
     vllm_pool_timeout_seconds: float = 10.0
     vllm_max_connections: int = 100
     vllm_max_keepalive_connections: int = 20
+    planner_novelty_target_generate: float = 0.7
+    planner_novelty_target_refine: float = 0.35
     planner_fallback_enabled: bool = False
     backend_internal_api_key: str = ""
     google_maps_api_key: str = ""
@@ -36,14 +36,12 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3001",
     ]
 
-    # ── SMTP settings (shared mailbox for invite emails) ─────────────
-    smtp_host: str = ""  # e.g. "smtp.gmail.com"
-    smtp_port: int = 587  # 587 = TLS (standard)
-    smtp_user: str = ""  # e.g. "ketchup.noreply@gmail.com"
-    smtp_password: str = ""  # App password (not regular password)
-    smtp_from_email: Optional[str] = None  # Defaults to smtp_user if not set
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: Optional[str] = None
 
-    # ── Frontend URL (for building email links) ──────────────────────
     frontend_url: str = "http://localhost:3001"
 
 

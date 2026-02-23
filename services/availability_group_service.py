@@ -1,5 +1,3 @@
-# services/availability_group_service.py
-
 """Group availability domain service."""
 
 from __future__ import annotations

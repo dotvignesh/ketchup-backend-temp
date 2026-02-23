@@ -1,12 +1,4 @@
-# utils/email.py
-
-"""
-Email utility — sends invite notifications via a shared SMTP mailbox.
-
-Uses Python's built-in smtplib (no extra dependencies).
-Configure via environment variables:
-  SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM_EMAIL, FRONTEND_URL
-"""
+"""Send invite emails via SMTP."""
 
 import logging
 import smtplib
@@ -24,19 +16,11 @@ def send_invite_email(
     inviter_name: str,
     group_id: str,
 ) -> bool:
-    """
-    Send an invitation email with accept/decline links pointing to the Ketchup app.
-
-    Returns True if sent successfully, False otherwise.
-    The links route to the frontend, where the user must be logged in
-    to accept or decline. This keeps auth server-side and avoids
-    unauthenticated public endpoints.
-    """
+    """Send an invitation email. Returns True on success, False otherwise."""
     settings = get_settings()
 
-    # If SMTP isn't configured, log a warning and skip (don't crash the invite flow)
     if not settings.smtp_host or not settings.smtp_user:
-        logger.warning("SMTP not configured — skipping invite email to %s", to_email)
+        logger.warning("SMTP not configured; skipping invite email to %s", to_email)
         return False
 
     frontend_url = settings.frontend_url.rstrip("/")
@@ -45,19 +29,16 @@ def send_invite_email(
 
     subject = f'🍅 {inviter_name} invited you to join "{group_name}" on Ketchup'
 
-    # ── Plain text fallback ──────────────────────────────────────────
     text_body = (
         f"Hey!\n\n"
-        f'{inviter_name} invited you to join the group "{group_name}" on Ketchup — '
-        f"an AI-powered social coordination app that helps friend groups actually hang out.\n\n"
+        f'{inviter_name} invited you to join the group "{group_name}" on Ketchup.\n\n'
         f"Accept the invite: {accept_url}\n"
         f"Decline the invite: {decline_url}\n\n"
         f"This invite expires in 24 hours. If you don't respond, "
         f"it will be automatically declined.\n\n"
-        f"— The Ketchup Team 🍅"
+        f"- The Ketchup Team"
     )
 
-    # ── HTML body ────────────────────────────────────────────────────
     html_body = f"""\
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 max-width: 560px; margin: 0 auto; padding: 32px 24px; color: #1a1a1a;">
@@ -71,8 +52,7 @@ def send_invite_email(
             <strong>"{group_name}"</strong> on Ketchup.
         </p>
         <p style="font-size: 14px; color: #555; line-height: 1.6;">
-            Ketchup is an AI-powered social coordination app that helps friend
-            groups go from "we should hang out" to an actual plan — in minutes.
+            Ketchup helps groups coordinate plans and decisions.
         </p>
 
         <div style="text-align: center; margin: 32px 0;">
@@ -97,7 +77,6 @@ def send_invite_email(
     </div>
     """
 
-    # ── Build MIME message ───────────────────────────────────────────
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = settings.smtp_from_email or settings.smtp_user
@@ -105,7 +84,6 @@ def send_invite_email(
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
 
-    # ── Send via SMTP ────────────────────────────────────────────────
     try:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
             server.ehlo()

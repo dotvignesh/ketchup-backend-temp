@@ -1,5 +1,3 @@
-# api/routes/availability_group.py
-
 """Group availability controllers (HTTP layer)."""
 
 from typing import Optional

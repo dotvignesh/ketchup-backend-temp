@@ -1,5 +1,3 @@
-# services/group_access.py
-
 """Shared access-control helpers for group-scoped resources."""
 
 from uuid import UUID

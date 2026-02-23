@@ -1,5 +1,3 @@
-# api/routes/availability.py
-
 """Availability controllers (HTTP layer)."""
 from uuid import UUID
 
