@@ -1,6 +1,7 @@
 """Application settings from environment variables."""
 
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +12,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str = "postgresql://postgres:postgres@localhost:5433/appdb"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/appdb"
     vllm_base_url: str = "http://localhost:8080/v1"
     vllm_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     vllm_api_key: str = "EMPTY"
@@ -41,7 +42,6 @@ class Settings(BaseSettings):
     smtp_from_email: str | None = None
 
     frontend_url: str = "http://localhost:3001"
-
 
 
 @lru_cache

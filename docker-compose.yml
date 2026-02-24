@@ -68,6 +68,8 @@ services:
     environment:
       <<: *pipeline-env
     working_dir: /app
+    # ports:
+    #   - "8081:8080"
     volumes:
       - .:/app
       - airflow_home:/app/airflow_home

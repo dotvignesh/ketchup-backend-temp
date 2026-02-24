@@ -109,7 +109,6 @@ For vLLM auto tool-calling, run vLLM with:
 
 ## Related Docs
 
-- `pipelines/README.md`
 - `data_pipeline.md`
 - `gcp.md`
 - `agents/README.md`

@@ -5,23 +5,23 @@ stages:
     deps:
     - path: scripts/acquire_data.py
       hash: md5
-      md5: 3ba72afb516e4f16e1dcb6aa7932e9a2
+      md5: 881d86e6fc0888bf5564d3d54ec4ef67
       size: 3337
     outs:
     - path: data/metrics/acquisition_metrics.json
       hash: md5
-      md5: 727778f6d09c2202ee7880ea891eb0dd
+      md5: 59ff5ee1ceda8d73c0410cb98b0bdf9a
       size: 137
     - path: data/raw/calendar_data.csv
       hash: md5
-      md5: a610e7e04969bfc6364a6706e7c4ee3a
-      size: 249
+      md5: 835398cc113e910a222ee8e102c14ad9
+      size: 83
   acquire_user_feedback:
     cmd: python scripts/acquire_user_feedback.py
     deps:
     - path: scripts/acquire_user_feedback.py
       hash: md5
-      md5: e5a32e751e070915bd2f913283f8eb1b
+      md5: 05c42c279d8bb04125f65cc2bd622ab4
       size: 2186
     outs:
     - path: data/raw/user_feedback.csv
@@ -33,8 +33,8 @@ stages:
     deps:
     - path: data/raw/calendar_data.csv
       hash: md5
-      md5: a610e7e04969bfc6364a6706e7c4ee3a
-      size: 249
+      md5: 835398cc113e910a222ee8e102c14ad9
+      size: 83
     - path: scripts/preprocess_data.py
       hash: md5
       md5: d6bc6e2c2fb1bc356c5db8fd190284b1
@@ -42,19 +42,19 @@ stages:
     outs:
     - path: data/metrics/preprocessing_metrics.json
       hash: md5
-      md5: 2ce4931aad777d200fa608d1c89a690b
+      md5: 2a66587e48d96bc6992c66daebe60cc2
       size: 119
     - path: data/processed/calendar_processed.csv
       hash: md5
-      md5: 8251ff56a78ff17ecabf89ad0874aa95
-      size: 339
+      md5: eaf460a277c44a15de786a1f88f82ea7
+      size: 139
   validate_data:
     cmd: python scripts/validate_data.py
     deps:
     - path: data/processed/calendar_processed.csv
       hash: md5
-      md5: 8251ff56a78ff17ecabf89ad0874aa95
-      size: 339
+      md5: eaf460a277c44a15de786a1f88f82ea7
+      size: 139
     - path: scripts/validate_data.py
       hash: md5
       md5: 12ee4b4d0355469c0beb32fed6451ac3
@@ -62,15 +62,15 @@ stages:
     outs:
     - path: data/reports/validation_report.json
       hash: md5
-      md5: 0eab38547afc107fa47d8cd5988994e2
-      size: 323
+      md5: 045278ef2caf4662c3fce25f606e394e
+      size: 595
   detect_anomalies:
     cmd: python scripts/detect_anomalies.py
     deps:
     - path: data/processed/calendar_processed.csv
       hash: md5
-      md5: 8251ff56a78ff17ecabf89ad0874aa95
-      size: 339
+      md5: eaf460a277c44a15de786a1f88f82ea7
+      size: 139
     - path: scripts/detect_anomalies.py
       hash: md5
       md5: c112df815a675626fe031c970d65cdea
@@ -78,15 +78,15 @@ stages:
     outs:
     - path: data/reports/anomaly_report.json
       hash: md5
-      md5: a911572f7488594a3a239117de714650
+      md5: af7a918f4b2ce71225731ceeb424c0e4
       size: 447
   detect_bias:
     cmd: python scripts/detect_bias.py
     deps:
     - path: data/processed/calendar_processed.csv
       hash: md5
-      md5: 8251ff56a78ff17ecabf89ad0874aa95
-      size: 339
+      md5: eaf460a277c44a15de786a1f88f82ea7
+      size: 139
     - path: scripts/detect_bias.py
       hash: md5
       md5: dc51f38f84e6456fbabcb07855f7db1f
@@ -94,8 +94,8 @@ stages:
     outs:
     - path: data/reports/bias_report.json
       hash: md5
-      md5: e6a4694b7c97210f3fc6485b7a92d398
-      size: 1238
+      md5: 29f1526ae568e14b3f9e6e2f15faa9dd
+      size: 238
   materialize_analytics:
     cmd: python scripts/materialize_analytics.py
     deps:
@@ -118,19 +118,19 @@ stages:
     outs:
     - path: data/metrics/materialization_metrics.json
       hash: md5
-      md5: 3c078884f926072cf4c427ba88dfeb98
-      size: 263
+      md5: 716896aa9f1f20e8d12081378fb8615a
+      size: 261
     - path: data/reports/analytics_status.json
       hash: md5
-      md5: 973b3ec2e298f3e846320099f3e57853
-      size: 649
+      md5: b4938640a9af97899561a35fdd83493d
+      size: 645
   generate_statistics:
     cmd: python scripts/generate_statistics.py
     deps:
     - path: data/processed/calendar_processed.csv
       hash: md5
-      md5: 8251ff56a78ff17ecabf89ad0874aa95
-      size: 339
+      md5: eaf460a277c44a15de786a1f88f82ea7
+      size: 139
     - path: scripts/generate_statistics.py
       hash: md5
       md5: 68a7c4ba8ebb5842894ac7941973fe88
@@ -138,9 +138,9 @@ stages:
     outs:
     - path: data/statistics/calendar_stats.json
       hash: md5
-      md5: 30542423080951f977e9142923a413cd
-      size: 2322
+      md5: 66342322a9d1cfc090642ac3de05bc90
+      size: 1686
     - path: data/statistics/summary.json
       hash: md5
-      md5: 71ff9cb72a23523350d0286a6fb39382
-      size: 201
+      md5: 88d9765b0741a2077c55237abc70b65b
+      size: 150

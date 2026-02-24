@@ -17,7 +17,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/appdb"
+DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/appdb"
 
 
 def _ensure_dir(path: Path) -> None:

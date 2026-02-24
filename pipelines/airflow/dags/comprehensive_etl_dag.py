@@ -11,13 +11,13 @@ from time import perf_counter
 
 import pandas as pd
 from airflow import DAG
-from airflow.models import Variable
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
 
 try:
     from pipelines.monitoring import PerformanceProfiler
 except Exception:  # pragma: no cover - defensive import for constrained Airflow envs
+
     class PerformanceProfiler:  # type: ignore[override]
         def __init__(self) -> None:
             self._durations: dict[str, float] = {}
@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover - defensive import for constrained Airflow
 
         def end_profiling(self, task_name: str, status: str = "completed") -> float:
             return float(self._durations.get(task_name, 0.0))
+
 
 logger = logging.getLogger(__name__)
 profiler = PerformanceProfiler()
@@ -77,7 +78,11 @@ def _track_task_end(
 
 def _load_task_profiles(context: dict) -> dict[str, object]:
     profiles: list[dict[str, object]] = []
-    for task_id in ("materialize_features", "validate_materialization", "run_bias_checks"):
+    for task_id in (
+        "materialize_features",
+        "validate_materialization",
+        "run_bias_checks",
+    ):
         profile = context["ti"].xcom_pull(
             task_ids=task_id,
             key=f"{task_id}_task_profile",
@@ -110,7 +115,9 @@ def materialize_features(**context) -> dict[str, object]:
     async def _run() -> dict[str, object]:
         await db.connect()
         try:
-            return await refresh_materialized_features(job_name="ketchup_comprehensive_pipeline")
+            return await refresh_materialized_features(
+                job_name="ketchup_comprehensive_pipeline"
+            )
         finally:
             await db.disconnect()
 
@@ -142,13 +149,20 @@ def validate_materialization(**context) -> dict[str, object]:
     task_name = context["task"].task_id
     started_at = _track_task_start(task_name)
 
-    result = context["ti"].xcom_pull(
-        task_ids="materialize_features",
-        key="materialization_result",
-    ) or {}
+    result = (
+        context["ti"].xcom_pull(
+            task_ids="materialize_features",
+            key="materialization_result",
+        )
+        or {}
+    )
     row_counts = (result or {}).get("row_counts") or {}
 
-    required = ("plan_outcome_fact", "venue_performance_prior", "group_feature_snapshot")
+    required = (
+        "plan_outcome_fact",
+        "venue_performance_prior",
+        "group_feature_snapshot",
+    )
     issues: list[str] = []
     for table in required:
         count = int(row_counts.get(table, 0)) if isinstance(row_counts, dict) else 0
@@ -171,14 +185,19 @@ def validate_materialization(**context) -> dict[str, object]:
     return validation
 
 
-def should_run_bias_checks(**context) -> bool:
-    raw = Variable.get("run_extended_bias_analysis", default_var="false")
-    return str(raw).lower() in {"1", "true", "yes", "on"}
+# def should_run_bias_checks(**context) -> bool:
+#     # raw = Variable.get("run_extended_bias_analysis", default_var="false")
+#     raw = Variable.get("run_extended_bias_analysis", default_var="true")
+# return str(raw).lower() in {"1", "true", "yes", "on"}
 
 
 def run_bias_checks(**context) -> dict[str, object]:
     from database import db
-    from pipelines.bias_detection import BiasAnalyzer, BiasMitigationStrategy, DataSlicer
+    from pipelines.bias_detection import (
+        BiasAnalyzer,
+        BiasMitigationStrategy,
+        DataSlicer,
+    )
 
     task_name = context["task"].task_id
     started_at = _track_task_start(task_name)
@@ -221,7 +240,9 @@ def run_bias_checks(**context) -> dict[str, object]:
             positive_label=1,
         )
         biased_slices = sorted({m.slice_name for m in metrics if m.is_biased})
-        report = BiasMitigationStrategy.generate_mitigation_report(metrics, biased_slices)
+        report = BiasMitigationStrategy.generate_mitigation_report(
+            metrics, biased_slices
+        )
         context["ti"].xcom_push(key="bias_report", value=report)
         _track_task_end(
             context=context,
@@ -283,11 +304,11 @@ validate_task = PythonOperator(
     dag=dag,
 )
 
-bias_gate_task = ShortCircuitOperator(
-    task_id="should_run_extended_bias_analysis",
-    python_callable=should_run_bias_checks,
-    dag=dag,
-)
+# bias_gate_task = ShortCircuitOperator(
+#     task_id="should_run_extended_bias_analysis",
+#     python_callable=should_run_bias_checks,
+#     dag=dag,
+# )
 
 bias_task = PythonOperator(
     task_id="run_bias_checks",
@@ -303,5 +324,6 @@ report_task = PythonOperator(
 )
 
 materialize_task >> validate_task
-validate_task >> bias_gate_task >> bias_task >> report_task
+# validate_task >> bias_gate_task >> bias_task >> report_task
+validate_task >> bias_task >> report_task
 validate_task >> report_task

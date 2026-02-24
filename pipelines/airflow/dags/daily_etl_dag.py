@@ -49,10 +49,13 @@ def materialize_features(**context) -> dict[str, object]:
 
 
 def write_report(**context) -> dict[str, object]:
-    result = context["ti"].xcom_pull(
-        task_ids="materialize_features",
-        key="materialization_result",
-    ) or {}
+    result = (
+        context["ti"].xcom_pull(
+            task_ids="materialize_features",
+            key="materialization_result",
+        )
+        or {}
+    )
     report = {
         "generated_at": datetime.utcnow().isoformat(),
         "job_name": "daily_analytics_materialization",
@@ -77,5 +80,3 @@ report_task = PythonOperator(
     python_callable=write_report,
     dag=dag,
 )
-
-materialize_task >> report_task
