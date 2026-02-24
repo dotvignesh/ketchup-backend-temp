@@ -1,6 +1,6 @@
 # Ketchup Backend
 
-FastAPI backend plus data pipeline for planning, voting, and analytics feature materialization.
+FastAPI backend plus data pipeline for planning, voting, and analytics feature materialization. For a deeper dive on the methodology this takes for the data pipeline, please refer to `data_pipeline.md`.
 
 ## What This Repo Owns
 
