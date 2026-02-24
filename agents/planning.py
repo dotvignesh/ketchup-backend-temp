@@ -327,22 +327,163 @@ def _prior_venue_set(prior_venues: list[str] | None) -> set[str]:
     }
 
 
+def _venue_prior_score(venue_label: str, prior_scores: dict[str, float]) -> float:
+    token = _normalize_venue_token(venue_label)
+    if not token:
+        return 0.0
+    if token in prior_scores:
+        return prior_scores[token]
+
+    # Soft match for title variants, e.g. "Venue - Downtown".
+    best = 0.0
+    for key, value in prior_scores.items():
+        if token in key or key in token:
+            best = max(best, value)
+    return best
+
+
+def _build_prior_scores(venue_priors: list[dict[str, Any]] | None) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    if not venue_priors:
+        return scores
+
+    for prior in venue_priors:
+        if not isinstance(prior, dict):
+            continue
+        key = _normalize_venue_token(prior.get("venue_key"))
+        if not key:
+            continue
+
+        win_rate = float(prior.get("win_rate") or 0.0)
+        feedback = float(prior.get("feedback_score") or 0.0)
+        attendance = float(prior.get("attendance_rate") or 0.0)
+        avg_rank = prior.get("avg_rank")
+        try:
+            avg_rank_f = float(avg_rank) if avg_rank is not None else None
+        except (TypeError, ValueError):
+            avg_rank_f = None
+
+        rank_bonus = 0.0
+        if avg_rank_f is not None:
+            rank_bonus = max(0.0, min(1.0, (6.0 - avg_rank_f) / 5.0))
+
+        raw = (0.45 * win_rate) + (0.25 * feedback) + (0.2 * attendance) + (0.1 * rank_bonus)
+        scores[key] = max(scores.get(key, 0.0), round(raw, 4))
+    return scores
+
+
+def _build_analytics_block(
+    analytics_snapshot: dict[str, Any] | None,
+    venue_priors: list[dict[str, Any]] | None,
+) -> str:
+    lines: list[str] = []
+    if analytics_snapshot:
+        top_tags = analytics_snapshot.get("top_activity_tags") or []
+        if top_tags:
+            lines.append(
+                "Top activity tags: " + ", ".join(str(tag) for tag in top_tags[:5])
+            )
+        budget_mode = str(analytics_snapshot.get("budget_mode") or "").strip()
+        if budget_mode:
+            lines.append(f"Budget mode from history: {budget_mode}")
+        mobility_mode = str(analytics_snapshot.get("mobility_mode") or "").strip()
+        if mobility_mode:
+            lines.append(f"Mobility mode from history: {mobility_mode}")
+        novelty = analytics_snapshot.get("historical_novelty_score")
+        if isinstance(novelty, (int, float)):
+            lines.append(f"Historical novelty score: {round(float(novelty), 3)}")
+
+    if venue_priors:
+        top_venues = []
+        for prior in venue_priors[:8]:
+            if not isinstance(prior, dict):
+                continue
+            venue = str(prior.get("venue_key") or "").strip()
+            if not venue:
+                continue
+            sample_size = int(prior.get("sample_size") or 0)
+            win_rate = float(prior.get("win_rate") or 0.0)
+            top_venues.append(f"- {venue} (win_rate={win_rate:.2f}, samples={sample_size})")
+        if top_venues:
+            lines.append("Venue priors from outcomes:\n" + "\n".join(top_venues))
+
+    if not lines:
+        return ""
+    return "\nAnalytics hints from historical outcomes:\n" + "\n".join(lines) + "\n"
+
+
+def _normalize_analytics_snapshot(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+
+    snapshot: dict[str, Any] = {}
+    top_tags = raw.get("top_activity_tags")
+    if isinstance(top_tags, list):
+        snapshot["top_activity_tags"] = [str(tag).strip() for tag in top_tags if str(tag).strip()]
+
+    for key in ("budget_mode", "mobility_mode", "feature_version", "snapshot_at"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            snapshot[key] = value.strip()
+
+    novelty = raw.get("historical_novelty_score")
+    if isinstance(novelty, (int, float)):
+        snapshot["historical_novelty_score"] = float(novelty)
+
+    weights = raw.get("refine_descriptor_weights")
+    if isinstance(weights, dict):
+        snapshot["refine_descriptor_weights"] = {
+            str(k): float(v)
+            for k, v in weights.items()
+            if isinstance(k, str) and isinstance(v, (int, float))
+        }
+
+    return snapshot or None
+
+
+def _normalize_venue_priors(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    priors: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_venue_token(item.get("venue_key"))
+        if not key:
+            continue
+        prior: dict[str, Any] = {"venue_key": key}
+        for metric in ("win_rate", "avg_rank", "attendance_rate", "feedback_score"):
+            value = item.get(metric)
+            if isinstance(value, (int, float)):
+                prior[metric] = float(value)
+        sample_size = item.get("sample_size")
+        if isinstance(sample_size, int):
+            prior["sample_size"] = sample_size
+        priors.append(prior)
+    return priors
+
+
 def _select_with_novelty(
     items: list[dict[str, Any]],
     prior_venues: list[str] | None,
     novelty_target: float,
     label_getter: Callable[[dict[str, Any]], str],
     max_items: int = 5,
+    priority_score_getter: Callable[[dict[str, Any]], float] | None = None,
 ) -> list[dict[str, Any]]:
     if not items:
         return []
+
+    ordered_items = list(items)
+    if priority_score_getter:
+        ordered_items.sort(key=priority_score_getter, reverse=True)
 
     prior_set = _prior_venue_set(prior_venues)
     required_novel = min(max_items, int(ceil(max_items * _clamp_novelty_target(novelty_target))))
 
     novel: list[dict[str, Any]] = []
     repeated: list[dict[str, Any]] = []
-    for item in items:
+    for item in ordered_items:
         label = _normalize_venue_token(label_getter(item))
         if label and label in prior_set:
             repeated.append(item)
@@ -358,7 +499,7 @@ def _select_with_novelty(
         selected.append(item)
 
     if len(selected) < max_items:
-        for item in items:
+        for item in ordered_items:
             if len(selected) >= max_items:
                 break
             if item not in selected:
@@ -616,6 +757,7 @@ def _build_maps_grounded_fallback_plans_from_places(
     refinement_notes: str | None = None,
     prior_venues: list[str] | None = None,
     novelty_target: float = 0.5,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
     if not places:
         return None
@@ -629,12 +771,17 @@ def _build_maps_grounded_fallback_plans_from_places(
     reason_short = reason[:180]
     refinement_short = (refinement_notes or "")[:240]
     prior_set = _prior_venue_set(prior_venues)
+    prior_scores = _build_prior_scores(venue_priors)
     selected_places = _select_with_novelty(
         items=places,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
         label_getter=lambda place: str(place.get("name") or ""),
         max_items=5,
+        priority_score_getter=lambda place: _venue_prior_score(
+            str(place.get("name") or ""),
+            prior_scores,
+        ),
     )
 
     plans: list[dict[str, Any]] = []
@@ -644,6 +791,7 @@ def _build_maps_grounded_fallback_plans_from_places(
         rating = place.get("rating")
         rating_text = f" Rated {rating}/5." if rating is not None else ""
         venue_token = _normalize_venue_token(venue_name)
+        prior_score = _venue_prior_score(venue_name, prior_scores)
         plans.append(
             {
                 "title": venue_name,
@@ -660,6 +808,7 @@ def _build_maps_grounded_fallback_plans_from_places(
                     "members": member_names,
                     "novelty_target": _clamp_novelty_target(novelty_target),
                     "is_novel": bool(venue_token) and venue_token not in prior_set,
+                    "historical_prior_score": prior_score,
                     "venue": place,
                 },
             }
@@ -686,6 +835,7 @@ def _build_maps_grounded_fallback_plans(
     refinement_notes: str | None = None,
     prior_venues: list[str] | None = None,
     novelty_target: float = 0.5,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
     places = _extract_places_from_tool_messages(tool_messages)
     return _build_maps_grounded_fallback_plans_from_places(
@@ -695,6 +845,7 @@ def _build_maps_grounded_fallback_plans(
         refinement_notes=refinement_notes,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
+        venue_priors=venue_priors,
     )
 
 
@@ -754,6 +905,7 @@ def _build_web_grounded_fallback_plans(
     refinement_notes: str | None = None,
     prior_venues: list[str] | None = None,
     novelty_target: float = 0.5,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]] | None:
     if not web_results:
         return None
@@ -766,12 +918,17 @@ def _build_web_grounded_fallback_plans(
     reason_short = reason[:180]
     refinement_short = (refinement_notes or "")[:240]
     prior_set = _prior_venue_set(prior_venues)
+    prior_scores = _build_prior_scores(venue_priors)
     selected_results = _select_with_novelty(
         items=web_results,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
         label_getter=lambda result: str(result.get("title") or ""),
         max_items=5,
+        priority_score_getter=lambda result: _venue_prior_score(
+            str(result.get("title") or ""),
+            prior_scores,
+        ),
     )
 
     plans: list[dict[str, Any]] = []
@@ -780,6 +937,7 @@ def _build_web_grounded_fallback_plans(
         snippet = result.get("snippet") or "Candidate discovered from web search."
         source = result.get("source") or result.get("link") or "web"
         title_token = _normalize_venue_token(title)
+        prior_score = _venue_prior_score(str(title), prior_scores)
         plans.append(
             {
                 "title": str(title)[:120],
@@ -796,6 +954,7 @@ def _build_web_grounded_fallback_plans(
                     "members": member_names,
                     "novelty_target": _clamp_novelty_target(novelty_target),
                     "is_novel": bool(title_token) and title_token not in prior_set,
+                    "historical_prior_score": prior_score,
                     "reference": {
                         "title": result.get("title"),
                         "link": result.get("link"),
@@ -1069,6 +1228,8 @@ def _build_prompt(
     prior_venues: list[str] | None = None,
     refinement_descriptors: list[str] | None = None,
     refinement_focus_note: str | None = None,
+    analytics_snapshot: dict[str, Any] | None = None,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> str:
     member_lines = "\n".join(_format_member(m) for m in context["members"])
 
@@ -1110,6 +1271,7 @@ def _build_prompt(
             + "\n".join(f"- {venue}" for venue in prior_venues[:25])
             + "\n"
         )
+    analytics_block = _build_analytics_block(analytics_snapshot, venue_priors)
 
     if require_tool_grounding:
         grounding_block = (
@@ -1147,6 +1309,7 @@ Recent events:
 {descriptor_block}
 {lead_focus_block}
 {prior_venues_block}
+{analytics_block}
 Generate exactly 5 plans with these vibe types in order: anchor, pivot, reach, chill, wildcard.
 {novelty_block}
 {grounding_block}
@@ -1380,6 +1543,7 @@ async def _build_web_fallback_if_available(
     prior_venues: list[str] | None = None,
     novelty_target: float = 0.5,
     refinement_descriptors: list[str] | None = None,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
     if not enabled:
         return None, []
@@ -1403,6 +1567,7 @@ async def _build_web_fallback_if_available(
         refinement_notes=refinement_notes,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
+        venue_priors=venue_priors,
     )
     return plans, web_errors
 
@@ -1416,6 +1581,7 @@ async def _synthesize_grounded_fallback_plans(
     prior_venues: list[str] | None = None,
     novelty_target: float = 0.5,
     refinement_descriptors: list[str] | None = None,
+    venue_priors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
     synthesized = _build_maps_grounded_fallback_plans(
         context=context,
@@ -1424,6 +1590,7 @@ async def _synthesize_grounded_fallback_plans(
         refinement_notes=refinement_notes,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
+        venue_priors=venue_priors,
     )
     if synthesized:
         return synthesized, []
@@ -1440,6 +1607,7 @@ async def _synthesize_grounded_fallback_plans(
         refinement_notes=refinement_notes,
         prior_venues=prior_venues,
         novelty_target=novelty_target,
+        venue_priors=venue_priors,
     )
     if synthesized:
         return synthesized, map_errors
@@ -1453,6 +1621,7 @@ async def _synthesize_grounded_fallback_plans(
         prior_venues=prior_venues,
         novelty_target=novelty_target,
         refinement_descriptors=refinement_descriptors,
+        venue_priors=venue_priors,
     )
     if web_synthesized:
         return web_synthesized, [*map_errors, *web_errors]
@@ -1713,6 +1882,9 @@ async def generate_group_plans(
     context = await _load_group_context(group_id)
     settings = get_settings()
     constraints = planning_constraints if isinstance(planning_constraints, dict) else {}
+    plan_mode = str(
+        constraints.get("plan_mode") or ("refine" if refinement_notes else "generate")
+    ).strip().lower()
     novelty_target = _clamp_novelty_target(
         constraints.get("novelty_target"),
         default=0.35 if refinement_notes else 0.7,
@@ -1727,6 +1899,25 @@ async def generate_group_plans(
         for descriptor in (constraints.get("refinement_descriptors") or [])
         if str(descriptor).strip()
     ]
+    analytics_snapshot = _normalize_analytics_snapshot(constraints.get("analytics_snapshot"))
+    venue_priors = _normalize_venue_priors(constraints.get("venue_priors"))
+    if not refinement_descriptors and plan_mode == "refine" and analytics_snapshot:
+        weights = analytics_snapshot.get("refine_descriptor_weights")
+        if isinstance(weights, dict):
+            ranked_descriptors = sorted(
+                (
+                    (str(key).strip().lower(), float(value))
+                    for key, value in weights.items()
+                    if isinstance(key, str) and isinstance(value, (int, float))
+                ),
+                key=lambda pair: pair[1],
+                reverse=True,
+            )
+            refinement_descriptors = [
+                key
+                for key, value in ranked_descriptors
+                if value >= 0.45
+            ][:3]
     refinement_focus_note = str(constraints.get("refinement_focus_note") or "").strip()
     use_tool_grounding = bool(settings.google_maps_api_key.strip())
     use_web_search = bool(settings.tavily_api_key.strip())
@@ -1747,6 +1938,8 @@ async def generate_group_plans(
         prior_venues=prior_venues,
         refinement_descriptors=refinement_descriptors,
         refinement_focus_note=refinement_focus_note,
+        analytics_snapshot=analytics_snapshot,
+        venue_priors=venue_priors,
     )
 
     try:
@@ -1783,6 +1976,7 @@ async def generate_group_plans(
                     prior_venues=prior_venues,
                     novelty_target=novelty_target,
                     refinement_descriptors=refinement_descriptors,
+                    venue_priors=venue_priors,
                 )
                 if synthesized:
                     logger.warning(
@@ -1835,6 +2029,7 @@ async def generate_group_plans(
                     prior_venues=prior_venues,
                     novelty_target=novelty_target,
                     refinement_descriptors=refinement_descriptors,
+                    venue_priors=venue_priors,
                 )
                 if synthesized:
                     logger.warning(
@@ -1864,6 +2059,7 @@ async def generate_group_plans(
                         prior_venues=prior_venues,
                         novelty_target=novelty_target,
                         refinement_descriptors=refinement_descriptors,
+                        venue_priors=venue_priors,
                     )
                     if synthesized:
                         logger.warning(
@@ -1906,6 +2102,7 @@ async def generate_group_plans(
                         prior_venues=prior_venues,
                         novelty_target=novelty_target,
                         refinement_descriptors=refinement_descriptors,
+                        venue_priors=venue_priors,
                     )
                     if synthesized:
                         logger.warning(

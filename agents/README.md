@@ -16,6 +16,7 @@
 - Deterministic synthesis fallback paths when model output is unusable
 - Novelty controls (separate defaults for generate vs refine)
 - Refine steering via descriptors and optional lead note
+- Analytics-aware prompting and fallback ranking via materialized Postgres priors
 
 ## Environment Variables
 

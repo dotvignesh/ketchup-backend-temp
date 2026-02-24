@@ -1,29 +1,21 @@
 # Ketchup Backend
 
-FastAPI backend for groups, planning rounds, voting, invites, availability, and feedback.
+FastAPI backend for group coordination: plan generation/refinement, voting, event finalization, and feedback.
 
 ## Architecture
 
 - `api/routes/*`: HTTP handlers.
-- `services/*`: business logic and persistence orchestration.
-- `agents/planning.py`: canonical planner orchestration.
-- `database/*`: asyncpg connection and schema SQL.
-- `config/settings.py`: environment-backed settings.
-- `pipelines/*`: optional ETL + data quality modules.
+- `services/*`: business rules and persistence orchestration.
+- `agents/planning.py`: planner orchestration (OpenAI-compatible API + tools).
+- `analytics/*`: Postgres-backed feature materialization consumed by planner/refine.
+- `database/*`: asyncpg pool and SQL migrations.
+- `pipelines/*`: optional Airflow/DVC orchestration over the same Postgres source of truth.
 
-## Optional Data Pipeline
+## Runtime Data Model
 
-Pipeline code (Airflow DAGs, preprocessing, validation, bias checks) lives under
-`pipelines/`. It is intentionally optional and not required to run core API routes.
-
-See `pipelines/README.md` for setup and dependencies.
-Optional script-based pipeline stages are defined in `dvc.yaml`.
-
-## Requirements
-
-- Python 3.12+
-- PostgreSQL 16+
-- OpenAI-compatible chat completions endpoint (vLLM recommended)
+Product and analytics both use Postgres:
+- Product tables: `users`, `groups`, `group_preferences`, `plan_rounds`, `plans`, `votes`, `events`, `feedback`, `availability_blocks`.
+- Analytics tables: `analytics.pipeline_runs`, `analytics.plan_outcome_fact`, `analytics.venue_performance_prior`, `analytics.group_feature_snapshot`.
 
 ## Setup
 
@@ -36,41 +28,80 @@ cp .env.example .env
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Optional pipeline stack dependencies:
+Optional pipeline dependencies:
 
 ```bash
 pip install -r requirements-pipeline.txt
 ```
 
-## Generated Artifacts
+## Database Migrations
 
-Pipeline and Airflow commands generate local artifacts. Use this policy:
+Initial schema:
+- `database/migrations/01_schema.sql`
 
-| Artifact | Generate | Commit to git |
-| --- | --- | --- |
-| `airflow.cfg` / `airflow-webserver.pid` | `AIRFLOW_HOME=$(pwd)/airflow_home airflow db init` and `airflow webserver` | No |
-| `data/*` pipeline outputs | `dvc repro` | No |
-| `dvc.lock` | `dvc repro` | Yes (if DVC pipeline/stages change) |
-| `uv.lock` | `uv lock` | No (not used by current backend runtime) |
+Analytics schema:
+- `database/migrations/02_analytics.sql`
 
-Example commands:
+Backend startup and analytics jobs run an idempotent bootstrap that creates `analytics.*` tables
+if missing. `02_analytics.sql` remains the source-of-truth migration for managed environments.
+
+## Planner Runtime Contract
+
+- Planner targets `VLLM_BASE_URL` (OpenAI-compatible `/v1` API).
+- No llama.cpp-specific request fields are sent.
+- Tooling:
+  - `search_places` + `get_directions` when `GOOGLE_MAPS_API_KEY` is set.
+  - optional `web_search` when `TAVILY_API_KEY` is set and maps results are insufficient.
+- Planner reads analytics snapshots/venue priors from Postgres to improve generate/refine quality.
+
+For vLLM tool-calling:
+- `--enable-auto-tool-choice`
+- `--tool-call-parser hermes` (or parser matching your model/template)
+
+## Analytics Materialization
+
+Run one refresh:
 
 ```bash
-# Airflow local config/runtime files
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-airflow db init
-
-# DVC outputs + lockfile
-dvc repro
-
-# Optional only: generate uv lockfile (not part of current dependency contract)
-uv lock
+python scripts/materialize_analytics.py
 ```
 
-Health check:
+This updates:
+- `analytics.plan_outcome_fact`
+- `analytics.venue_performance_prior`
+- `analytics.group_feature_snapshot`
+- `analytics.pipeline_runs`
+
+Artifacts written for local inspection:
+- `data/metrics/materialization_metrics.json`
+- `data/reports/analytics_status.json`
+
+## DVC Pipeline (Optional)
 
 ```bash
-curl http://localhost:8000/health
+dvc repro
+dvc dag
+```
+
+Assignment mapping document:
+- `data_pipeline.md`
+
+Policy:
+- Commit: `dvc.yaml`, `dvc.lock` when stages/deps change.
+- Do not commit generated `data/*` outputs.
+
+## Airflow DAGs (Optional)
+
+- `daily_analytics_materialization`
+- `ketchup_comprehensive_pipeline`
+
+Example:
+
+```bash
+export AIRFLOW_HOME="$(pwd)/airflow_home"
+airflow db init
+airflow dags list
+airflow dags trigger daily_analytics_materialization
 ```
 
 ## Key Environment Variables
@@ -81,34 +112,16 @@ Core:
 - `FRONTEND_URL`
 
 Planner:
-- `VLLM_BASE_URL` (OpenAI-compatible base URL, usually ending in `/v1`)
-- `VLLM_MODEL` (model name sent in chat completion requests)
+- `VLLM_BASE_URL`
+- `VLLM_MODEL`
 - `VLLM_API_KEY`
-- `PLANNER_NOVELTY_TARGET_GENERATE` (default `0.7`)
-- `PLANNER_NOVELTY_TARGET_REFINE` (default `0.35`)
+- `PLANNER_NOVELTY_TARGET_GENERATE`
+- `PLANNER_NOVELTY_TARGET_REFINE`
 - `PLANNER_FALLBACK_ENABLED`
 
-Tooling:
-- `GOOGLE_MAPS_API_KEY` (Places API New + Routes API)
-- `TAVILY_API_KEY` (optional web-search fallback)
-
-Email:
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`
-
-## Planner Runtime Contract
-
-- Planner uses OpenAI-compatible chat completions via `VLLM_BASE_URL`.
-- Request shape is vLLM/OpenAI-compatible (no llama.cpp-specific fields).
-- Tool loop does not force `tool_choice="auto"`.
-- For vLLM tool-calling, run server with:
-  - `--enable-auto-tool-choice`
-  - `--tool-call-parser hermes` (or a parser matching your model/template)
-
-Behavior:
-- With `GOOGLE_MAPS_API_KEY`, planner uses `search_places` and `get_directions`.
-- With `TAVILY_API_KEY`, planner can use `web_search` when map results are insufficient.
-- If model output is empty/unparseable, backend attempts deterministic grounded synthesis.
-- If enabled, generic fallback can be used as last resort.
+Tools:
+- `GOOGLE_MAPS_API_KEY`
+- `TAVILY_API_KEY`
 
 ## API Surface
 
@@ -140,16 +153,37 @@ Plans:
 - `POST /api/groups/{group_id}/plans/{round_id}/refine`
 - `POST /api/groups/{group_id}/plans/{round_id}/finalize`
 
-Refine request body (optional):
-- `descriptors: string[]`
-- `lead_note: string`
-
 Feedback:
 - `POST /api/groups/{group_id}/events/{event_id}/feedback`
 - `GET /api/groups/{group_id}/events/{event_id}/feedback`
 
-## Validation
+Internal analytics (requires `X-Internal-Auth`):
+- `GET /api/internal/analytics/status`
+- `POST /api/internal/analytics/rebuild`
+
+## Testing and Validation
+
+Static sanity:
 
 ```bash
-python3 -m compileall agents api services config models database utils pipelines scripts
+python3 -m compileall agents analytics api services config models database utils pipelines scripts
+```
+
+Pipeline tests:
+
+```bash
+pip install -r requirements-pipeline.txt
+pytest tests/test_pipeline_components.py -v
+```
+
+Analytics materialization check:
+
+```bash
+python scripts/materialize_analytics.py
+```
+
+Local-stack API smoke (from `ketchup-local`):
+
+```bash
+docker compose -f ../ketchup-local/docker-compose.yml exec -T backend python -c "import httpx; print(httpx.get('http://localhost:8000/health', timeout=5).status_code)"
 ```

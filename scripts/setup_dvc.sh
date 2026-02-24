@@ -4,7 +4,7 @@ set -euo pipefail
 echo "Initializing DVC workspace for ketchup-backend..."
 
 if ! command -v dvc >/dev/null 2>&1; then
-  echo "dvc not found. Install with: pip install dvc dvc-gs"
+  echo "dvc not found. Install with: pip install dvc (add dvc-gs only if using GCS remote)"
   exit 1
 fi
 

@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from analytics.repositories import (
+    get_group_venue_priors,
+    get_latest_group_feature_snapshot,
+)
 from agents.planning import PlannerError, generate_group_plans
 from config import get_settings
 from database import db
 from services.errors import BadRequestError, NotFoundError, UpstreamServiceError
 from services.group_access import require_active_group_member, require_group_lead
+
+logger = logging.getLogger(__name__)
 
 VOTING_WINDOW_HOURS = 24
 DEFAULT_EVENT_OFFSET_DAYS = 7
@@ -129,11 +136,40 @@ async def _fetch_recent_venue_names(group_id: UUID, limit: int = RECENT_VENUE_LI
     return venues
 
 
+async def _load_planner_analytics_context(
+    group_id: UUID,
+) -> tuple[dict[str, object] | None, list[dict[str, object]], dict[str, object]]:
+    try:
+        snapshot = await get_latest_group_feature_snapshot(group_id)
+        priors = await get_group_venue_priors(group_id, limit=40)
+    except Exception as exc:
+        logger.warning(
+            "Analytics context unavailable for group %s (%s: %s)",
+            group_id,
+            exc.__class__.__name__,
+            exc,
+        )
+        return None, [], {"analytics_unavailable": True}
+
+    metadata: dict[str, object] = {"venue_prior_count": len(priors)}
+    if snapshot:
+        metadata["feature_snapshot_at"] = snapshot.get("snapshot_at")
+        metadata["feature_version"] = snapshot.get("feature_version")
+
+    return snapshot, priors, metadata
+
+
 async def _insert_generated_plans(
-    round_id: UUID, plans: list[dict]
+    round_id: UUID,
+    plans: list[dict],
+    generation_metadata: dict[str, object] | None = None,
 ) -> list[dict[str, str | None]]:
     saved: list[dict[str, str | None]] = []
     for plan in plans:
+        logistics = dict(plan.get("logistics") or {})
+        if generation_metadata:
+            logistics.setdefault("analytics", dict(generation_metadata))
+
         row = await db.fetchrow(
             """
             INSERT INTO plans
@@ -150,7 +186,7 @@ async def _insert_generated_plans(
             plan.get("location"),
             plan.get("venue_name"),
             plan.get("estimated_cost"),
-            json.dumps(plan.get("logistics") or {}),
+            json.dumps(logistics),
         )
         saved.append(
             {
@@ -201,6 +237,9 @@ async def generate_plans(group_id: UUID, user_id: UUID) -> dict[str, object]:
         default=0.7,
     )
     prior_venues = await _fetch_recent_venue_names(group_id)
+    analytics_snapshot, venue_priors, generation_metadata = await _load_planner_analytics_context(
+        group_id
+    )
 
     try:
         generated = await generate_group_plans(
@@ -209,9 +248,15 @@ async def generate_plans(group_id: UUID, user_id: UUID) -> dict[str, object]:
                 "plan_mode": "generate",
                 "novelty_target": novelty_target,
                 "prior_venues": prior_venues,
+                "analytics_snapshot": analytics_snapshot,
+                "venue_priors": venue_priors,
             },
         )
-        plans_data = await _insert_generated_plans(round_id, generated)
+        plans_data = await _insert_generated_plans(
+            round_id,
+            generated,
+            generation_metadata=generation_metadata,
+        )
         await db.execute("UPDATE plan_rounds SET status = 'voting_open' WHERE id = $1", round_id)
     except PlannerError as exc:
         await db.execute(
@@ -400,6 +445,9 @@ async def refine_plans(
         default=0.35,
     )
     prior_venues = await _fetch_recent_venue_names(group_id)
+    analytics_snapshot, venue_priors, generation_metadata = await _load_planner_analytics_context(
+        group_id
+    )
 
     try:
         generated = await generate_group_plans(
@@ -411,9 +459,15 @@ async def refine_plans(
                 "prior_venues": prior_venues,
                 "refinement_descriptors": normalized_descriptors,
                 "refinement_focus_note": (lead_note or "").strip(),
+                "analytics_snapshot": analytics_snapshot,
+                "venue_priors": venue_priors,
             },
         )
-        plans_data = await _insert_generated_plans(new_round_id, generated)
+        plans_data = await _insert_generated_plans(
+            new_round_id,
+            generated,
+            generation_metadata=generation_metadata,
+        )
         await db.execute(
             "UPDATE plan_rounds SET status = 'voting_open' WHERE id = $1",
             new_round_id,

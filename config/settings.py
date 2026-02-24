@@ -1,8 +1,6 @@
 """Application settings from environment variables."""
 
 from functools import lru_cache
-from typing import Optional
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,19 +38,10 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str = ""
     smtp_password: str = ""
-    smtp_from_email: Optional[str] = None
+    smtp_from_email: str | None = None
 
     frontend_url: str = "http://localhost:3001"
 
-    # Optional data-pipeline and GCP settings.
-    redis_url: str = "redis://localhost:6379"
-    cache_ttl_seconds: int = 3600
-    api_timeout_seconds: int = 10
-    api_max_retries: int = 3
-    api_retry_backoff_factor: float = 0.5
-    gcp_project_id: str = "test-project"
-    gcp_credentials_path: Optional[str] = None
-    firestore_database: str = "(default)"
 
 
 @lru_cache

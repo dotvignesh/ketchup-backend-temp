@@ -13,9 +13,11 @@ from api.routes import (
     availability_group,
     feedback,
     groups,
+    internal_analytics,
     plans,
     users,
 )
+from analytics.bootstrap import ensure_analytics_schema
 from agents.planning import close_planner_client, init_planner_client
 from config import get_settings
 from database import db
@@ -26,6 +28,7 @@ from utils.invite_expiry import expire_stale_invites_loop
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.connect()
+    await ensure_analytics_schema()
     await init_planner_client()
 
     expiry_task = asyncio.create_task(expire_stale_invites_loop())
@@ -64,6 +67,7 @@ app.include_router(plans.router)
 app.include_router(availability.router)
 app.include_router(availability_group.router)
 app.include_router(feedback.router)
+app.include_router(internal_analytics.router)
 
 
 @app.exception_handler(ServiceError)

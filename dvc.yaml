@@ -57,30 +57,18 @@ stages:
       - data/reports/bias_report.json:
           cache: false
 
-  generate_synthetic_eval_data:
-    cmd: python scripts/synthetic_bias_slicing_eval.py --n 50 --save-csv data/raw/synthetic_eval_results.csv
+  materialize_analytics:
+    cmd: python scripts/materialize_analytics.py
     deps:
-      - scripts/synthetic_bias_slicing_eval.py
-    outs:
-      - data/raw/synthetic_eval_results.csv:
-          cache: true
-
-  analyze_bias_slices:
-    cmd: python scripts/bias_slice.py --csv data/raw/synthetic_eval_results.csv --out data/reports/bias_slicing_report.md
-    deps:
-      - scripts/bias_slice.py
-      - data/raw/synthetic_eval_results.csv
-    outs:
-      - data/reports/bias_slicing_report.md:
+      - scripts/materialize_analytics.py
+      - analytics/jobs.py
+      - analytics/orchestrator.py
+      - analytics/repositories.py
+    metrics:
+      - data/metrics/materialization_metrics.json:
           cache: false
-
-  fairlearn_bias_analysis:
-    cmd: python scripts/fairlearn_bias_slicing.py --csv data/raw/synthetic_eval_results.csv > data/reports/fairlearn_report.txt
-    deps:
-      - scripts/fairlearn_bias_slicing.py
-      - data/raw/synthetic_eval_results.csv
     outs:
-      - data/reports/fairlearn_report.txt:
+      - data/reports/analytics_status.json:
           cache: false
 
   generate_statistics:
