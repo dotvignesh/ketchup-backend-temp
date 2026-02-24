@@ -30,6 +30,40 @@ dag = DAG(
 )
 
 
+def _to_json_serializable(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, dict):
+        return {str(key): _to_json_serializable(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_serializable(item) for item in value]
+
+    if hasattr(value, "tolist"):
+        try:
+            return _to_json_serializable(value.tolist())
+        except Exception:
+            pass
+
+    if hasattr(value, "item"):
+        try:
+            return _to_json_serializable(value.item())
+        except Exception:
+            pass
+
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            pass
+
+    return str(value)
+
+
 def _build_mock_materialization_result(
     *, job_name: str, reason: str
 ) -> dict[str, object]:
@@ -136,7 +170,10 @@ def write_report(**context) -> dict[str, object]:
     out_dir = Path("data/reports")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "daily_analytics_report.json"
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(_to_json_serializable(report), indent=2),
+        encoding="utf-8",
+    )
     logger.info("Wrote analytics report: %s", out_path)
     return report
 
