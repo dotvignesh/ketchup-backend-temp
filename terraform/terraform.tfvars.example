@@ -1,0 +1,7 @@
+project_id  = "your-gcp-project-id"
+region      = "us-central1"
+environment = "dev"
+analytics_job_image = "us-central1-docker.pkg.dev/your-gcp-project-id/ketchup-backend-dev/ketchup-backend:latest"
+analytics_job_service_account_email = "ketchup-analytics@your-gcp-project-id.iam.gserviceaccount.com"
+database_url_secret_name = "DATABASE_URL"
+analytics_job_schedule = "0 3 * * *"

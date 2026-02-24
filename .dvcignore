@@ -1,0 +1,16 @@
+# DVC ignore patterns
+.git
+.gitignore
+.dvc/config.local
+.dvc/.gitignore
+/tmp
+/temp
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+env
+logs/*.log
+.env
+.env.local

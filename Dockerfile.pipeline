@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_SYSTEM_PYTHON=1 \
+    AIRFLOW_HOME=/app/airflow_home \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+COPY requirements.txt requirements-pipeline.txt ./
+RUN uv pip install --system -r requirements.txt -r requirements-pipeline.txt
+
+COPY . .
+
+CMD ["sleep", "infinity"]

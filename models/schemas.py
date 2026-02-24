@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # Auth
@@ -60,7 +60,7 @@ class GroupResponse(BaseModel):
     name: str
     lead_id: UUID
     status: str
-    members: list[GroupMemberResponse] = []
+    members: list[GroupMemberResponse] = Field(default_factory=list)
     created_at: Optional[datetime] = None
 
 
@@ -96,7 +96,7 @@ class PlanRoundResponse(BaseModel):
     iteration: int
     status: str
     voting_deadline: Optional[datetime] = None
-    plans: list[PlanResponse] = []
+    plans: list[PlanResponse] = Field(default_factory=list)
 
 
 class VoteRequest(BaseModel):
@@ -105,7 +105,7 @@ class VoteRequest(BaseModel):
 
 
 class RefinePlansRequest(BaseModel):
-    descriptors: list[str] = []
+    descriptors: list[str] = Field(default_factory=list)
     lead_note: Optional[str] = None
 
 
@@ -128,7 +128,7 @@ class AvailabilityBlockResponse(BaseModel):
 
 
 class AvailabilityBlocksUpdate(BaseModel):
-    blocks: list[AvailabilityBlockCreate] = []
+    blocks: list[AvailabilityBlockCreate] = Field(default_factory=list)
 
 
 # Feedback
@@ -136,3 +136,56 @@ class FeedbackCreate(BaseModel):
     rating: str
     notes: Optional[str] = None
     attended: bool = True
+
+
+# Pipeline schemas
+class FreeBusyInterval(BaseModel):
+    start: datetime
+    end: datetime
+    busy: bool = True
+
+
+class CalendarData(BaseModel):
+    user_id: str
+    intervals: list[FreeBusyInterval] = Field(default_factory=list)
+    retrieved_at: datetime
+    calendar_id: Optional[str] = None
+
+
+class VenueLocation(BaseModel):
+    latitude: float
+    longitude: float
+    address: str
+    city: str
+    state: str
+    zip_code: str
+
+
+class VenueMetadata(BaseModel):
+    venue_id: str
+    name: str
+    category: str
+    rating: float
+    review_count: int
+    price_level: Optional[int] = None
+    location: VenueLocation
+    photos: list[str] = Field(default_factory=list)
+    source: str
+    source_url: str
+    retrieved_at: datetime
+
+
+class TravelRoute(BaseModel):
+    origin_user_id: str
+    destination_venue_id: str
+    distance_miles: float
+    duration_minutes: int
+    retrieved_at: datetime
+
+
+class EventOption(BaseModel):
+    title: str
+    vibe_category: str
+    venue: VenueMetadata
+    estimated_cost_per_person: Optional[float] = None
+    estimated_duration_minutes: Optional[int] = None

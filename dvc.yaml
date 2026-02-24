@@ -1,0 +1,88 @@
+stages:
+  acquire_data:
+    cmd: python scripts/acquire_data.py
+    deps:
+      - scripts/acquire_data.py
+    outs:
+      - data/raw/calendar_data.csv:
+          cache: true
+    metrics:
+      - data/metrics/acquisition_metrics.json:
+          cache: false
+
+  acquire_user_feedback:
+    cmd: python scripts/acquire_user_feedback.py
+    deps:
+      - scripts/acquire_user_feedback.py
+    outs:
+      - data/raw/user_feedback.csv:
+          cache: true
+
+  preprocess_data:
+    cmd: python scripts/preprocess_data.py
+    deps:
+      - scripts/preprocess_data.py
+      - data/raw/calendar_data.csv
+    outs:
+      - data/processed/calendar_processed.csv:
+          cache: true
+    metrics:
+      - data/metrics/preprocessing_metrics.json:
+          cache: false
+
+  validate_data:
+    cmd: python scripts/validate_data.py
+    deps:
+      - scripts/validate_data.py
+      - data/processed/calendar_processed.csv
+    metrics:
+      - data/reports/validation_report.json:
+          cache: false
+
+  detect_anomalies:
+    cmd: python scripts/detect_anomalies.py
+    deps:
+      - scripts/detect_anomalies.py
+      - data/processed/calendar_processed.csv
+    metrics:
+      - data/reports/anomaly_report.json:
+          cache: false
+
+  detect_bias:
+    cmd: python scripts/detect_bias.py
+    deps:
+      - scripts/detect_bias.py
+      - data/processed/calendar_processed.csv
+    metrics:
+      - data/reports/bias_report.json:
+          cache: false
+
+  materialize_analytics:
+    cmd: python scripts/materialize_analytics.py
+    deps:
+      - scripts/materialize_analytics.py
+      - analytics/jobs.py
+      - analytics/orchestrator.py
+      - analytics/repositories.py
+    metrics:
+      - data/metrics/materialization_metrics.json:
+          cache: false
+    outs:
+      - data/reports/analytics_status.json:
+          cache: false
+
+  generate_statistics:
+    cmd: python scripts/generate_statistics.py
+    deps:
+      - scripts/generate_statistics.py
+      - data/processed/calendar_processed.csv
+    outs:
+      - data/statistics/calendar_stats.json
+    metrics:
+      - data/statistics/summary.json:
+          cache: false
+
+plots:
+  - data/analysis/plots/data_distribution.csv:
+      x: bins
+      y: frequency

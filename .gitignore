@@ -8,6 +8,8 @@ __pycache__/
 # Virtual env
 venv/
 .venv/
+.venv-*/
+.venv-airflow/
 env/
 
 # Environment
@@ -33,9 +35,33 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Testing
 .coverage
 htmlcov/
 .pytest_cache/
 .tox/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Airflow local runtime artifacts
+airflow.cfg
+airflow-webserver.pid
+airflow_home/
+
+# Pipeline outputs
+data/raw/
+data/processed/
+data/metrics/
+data/reports/
+data/statistics/
+data/analysis/
+
+# DVC and terraform local state
+.dvc/tmp/
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
