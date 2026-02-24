@@ -1,0 +1,146 @@
+schema: '2.0'
+stages:
+  acquire_data:
+    cmd: python scripts/acquire_data.py
+    deps:
+    - path: scripts/acquire_data.py
+      hash: md5
+      md5: 3ba72afb516e4f16e1dcb6aa7932e9a2
+      size: 3337
+    outs:
+    - path: data/metrics/acquisition_metrics.json
+      hash: md5
+      md5: 727778f6d09c2202ee7880ea891eb0dd
+      size: 137
+    - path: data/raw/calendar_data.csv
+      hash: md5
+      md5: a610e7e04969bfc6364a6706e7c4ee3a
+      size: 249
+  acquire_user_feedback:
+    cmd: python scripts/acquire_user_feedback.py
+    deps:
+    - path: scripts/acquire_user_feedback.py
+      hash: md5
+      md5: e5a32e751e070915bd2f913283f8eb1b
+      size: 2186
+    outs:
+    - path: data/raw/user_feedback.csv
+      hash: md5
+      md5: 318db4ec6d0fdaee21ab8157a1ea0493
+      size: 66
+  preprocess_data:
+    cmd: python scripts/preprocess_data.py
+    deps:
+    - path: data/raw/calendar_data.csv
+      hash: md5
+      md5: a610e7e04969bfc6364a6706e7c4ee3a
+      size: 249
+    - path: scripts/preprocess_data.py
+      hash: md5
+      md5: d6bc6e2c2fb1bc356c5db8fd190284b1
+      size: 2982
+    outs:
+    - path: data/metrics/preprocessing_metrics.json
+      hash: md5
+      md5: 2ce4931aad777d200fa608d1c89a690b
+      size: 119
+    - path: data/processed/calendar_processed.csv
+      hash: md5
+      md5: 8251ff56a78ff17ecabf89ad0874aa95
+      size: 339
+  validate_data:
+    cmd: python scripts/validate_data.py
+    deps:
+    - path: data/processed/calendar_processed.csv
+      hash: md5
+      md5: 8251ff56a78ff17ecabf89ad0874aa95
+      size: 339
+    - path: scripts/validate_data.py
+      hash: md5
+      md5: 12ee4b4d0355469c0beb32fed6451ac3
+      size: 2732
+    outs:
+    - path: data/reports/validation_report.json
+      hash: md5
+      md5: 0eab38547afc107fa47d8cd5988994e2
+      size: 323
+  detect_anomalies:
+    cmd: python scripts/detect_anomalies.py
+    deps:
+    - path: data/processed/calendar_processed.csv
+      hash: md5
+      md5: 8251ff56a78ff17ecabf89ad0874aa95
+      size: 339
+    - path: scripts/detect_anomalies.py
+      hash: md5
+      md5: c112df815a675626fe031c970d65cdea
+      size: 2430
+    outs:
+    - path: data/reports/anomaly_report.json
+      hash: md5
+      md5: a911572f7488594a3a239117de714650
+      size: 447
+  detect_bias:
+    cmd: python scripts/detect_bias.py
+    deps:
+    - path: data/processed/calendar_processed.csv
+      hash: md5
+      md5: 8251ff56a78ff17ecabf89ad0874aa95
+      size: 339
+    - path: scripts/detect_bias.py
+      hash: md5
+      md5: dc51f38f84e6456fbabcb07855f7db1f
+      size: 3393
+    outs:
+    - path: data/reports/bias_report.json
+      hash: md5
+      md5: e6a4694b7c97210f3fc6485b7a92d398
+      size: 1238
+  materialize_analytics:
+    cmd: python scripts/materialize_analytics.py
+    deps:
+    - path: analytics/jobs.py
+      hash: md5
+      md5: b1ee13057569072ffbc9fd7891a609ba
+      size: 13025
+    - path: analytics/orchestrator.py
+      hash: md5
+      md5: 2dec4687b876e909d6ae163574019bf3
+      size: 2266
+    - path: analytics/repositories.py
+      hash: md5
+      md5: 86adac672dda176f093202cf0ab2befc
+      size: 6078
+    - path: scripts/materialize_analytics.py
+      hash: md5
+      md5: af279ebfdda188565862efae862d9af6
+      size: 1830
+    outs:
+    - path: data/metrics/materialization_metrics.json
+      hash: md5
+      md5: 3c078884f926072cf4c427ba88dfeb98
+      size: 263
+    - path: data/reports/analytics_status.json
+      hash: md5
+      md5: 973b3ec2e298f3e846320099f3e57853
+      size: 649
+  generate_statistics:
+    cmd: python scripts/generate_statistics.py
+    deps:
+    - path: data/processed/calendar_processed.csv
+      hash: md5
+      md5: 8251ff56a78ff17ecabf89ad0874aa95
+      size: 339
+    - path: scripts/generate_statistics.py
+      hash: md5
+      md5: 68a7c4ba8ebb5842894ac7941973fe88
+      size: 2727
+    outs:
+    - path: data/statistics/calendar_stats.json
+      hash: md5
+      md5: 30542423080951f977e9142923a413cd
+      size: 2322
+    - path: data/statistics/summary.json
+      hash: md5
+      md5: 71ff9cb72a23523350d0286a6fb39382
+      size: 201

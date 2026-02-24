@@ -389,6 +389,20 @@ class TestSchemaValidator:
         result = SchemaValidator.validate_schema(df, schema)
         assert result.passed
 
+    def test_validate_schema_timezone_aware_datetime(self):
+        df = pd.DataFrame(
+            {
+                "reference_date": pd.to_datetime(
+                    ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"],
+                    utc=True,
+                ),
+            },
+        )
+        schema = {"reference_date": np.datetime64}
+        result = SchemaValidator.validate_schema(df, schema)
+        assert result.passed
+        assert result.issue_count == 0
+
 
 class TestRangeValidator:
 

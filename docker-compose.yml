@@ -1,0 +1,81 @@
+name: ketchup-backend
+
+x-api-env: &api-env
+  DATABASE_URL: ${DATABASE_URL_INTERNAL:-postgresql://postgres:postgres@db:5432/appdb}
+  VLLM_BASE_URL: ${VLLM_BASE_URL_INTERNAL:-http://host.docker.internal:8080/v1}
+  VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+  VLLM_API_KEY: ${VLLM_API_KEY:-EMPTY}
+  PLANNER_NOVELTY_TARGET_GENERATE: ${PLANNER_NOVELTY_TARGET_GENERATE:-0.7}
+  PLANNER_NOVELTY_TARGET_REFINE: ${PLANNER_NOVELTY_TARGET_REFINE:-0.35}
+  PLANNER_FALLBACK_ENABLED: ${PLANNER_FALLBACK_ENABLED:-true}
+  BACKEND_INTERNAL_API_KEY: ${BACKEND_INTERNAL_API_KEY:-dev-internal-key-change-me}
+  GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+  TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+
+x-pipeline-env: &pipeline-env
+  DATABASE_URL: ${DATABASE_URL_INTERNAL:-postgresql://postgres:postgres@db:5432/appdb}
+  AIRFLOW_HOME: /app/airflow_home
+  PYTHONPATH: /app
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+  AIRFLOW__CORE__DAGS_FOLDER: /app/pipelines/airflow/dags
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////app/airflow_home/airflow.db
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    environment:
+      <<: *api-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: uv run --no-project uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pipeline:
+    profiles: ["pipeline"]
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    env_file:
+      - ./.env
+    environment:
+      <<: *pipeline-env
+    working_dir: /app
+    volumes:
+      - .:/app
+      - airflow_home:/app/airflow_home
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sleep infinity
+
+volumes:
+  pgdata:
+  airflow_home:

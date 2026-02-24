@@ -1,189 +1,103 @@
 # Ketchup Backend
 
-FastAPI backend for group coordination: plan generation/refinement, voting, event finalization, and feedback.
+FastAPI backend plus data pipeline for planning, voting, and analytics feature materialization.
 
-## Architecture
+## What This Repo Owns
 
-- `api/routes/*`: HTTP handlers.
-- `services/*`: business rules and persistence orchestration.
-- `agents/planning.py`: planner orchestration (OpenAI-compatible API + tools).
-- `analytics/*`: Postgres-backed feature materialization consumed by planner/refine.
-- `database/*`: asyncpg pool and SQL migrations.
-- `pipelines/*`: optional Airflow/DVC orchestration over the same Postgres source of truth.
+- API and business logic (`api/`, `services/`, `agents/`)
+- Postgres schema and analytics tables (`database/migrations/`)
+- Data pipeline stages, DVC graph, and Airflow DAGs (`scripts/`, `dvc.yaml`, `pipelines/`)
 
-## Runtime Data Model
+## Recommended Runtime (Docker + uv)
 
-Product and analytics both use Postgres:
-- Product tables: `users`, `groups`, `group_preferences`, `plan_rounds`, `plans`, `votes`, `events`, `feedback`, `availability_blocks`.
-- Analytics tables: `analytics.pipeline_runs`, `analytics.plan_outcome_fact`, `analytics.venue_performance_prior`, `analytics.group_feature_snapshot`.
+Use this repository's Compose stack to avoid maintaining multiple local Python environments.
 
-## Setup
+1) Configure environment:
 
 ```bash
 cd ketchup-backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 cp .env.example .env
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Optional pipeline dependencies:
+2) Start API + Postgres:
 
 ```bash
-pip install -r requirements-pipeline.txt
+docker compose up --build db api
 ```
 
-## Database Migrations
-
-Initial schema:
-- `database/migrations/01_schema.sql`
-
-Analytics schema:
-- `database/migrations/02_analytics.sql`
-
-Backend startup and analytics jobs run an idempotent bootstrap that creates `analytics.*` tables
-if missing. `02_analytics.sql` remains the source-of-truth migration for managed environments.
-
-## Planner Runtime Contract
-
-- Planner targets `VLLM_BASE_URL` (OpenAI-compatible `/v1` API).
-- No llama.cpp-specific request fields are sent.
-- Tooling:
-  - `search_places` + `get_directions` when `GOOGLE_MAPS_API_KEY` is set.
-  - optional `web_search` when `TAVILY_API_KEY` is set and maps results are insufficient.
-- Planner reads analytics snapshots/venue priors from Postgres to improve generate/refine quality.
-
-For vLLM tool-calling:
-- `--enable-auto-tool-choice`
-- `--tool-call-parser hermes` (or parser matching your model/template)
-
-## Analytics Materialization
-
-Run one refresh:
+3) Start pipeline worker (separate terminal):
 
 ```bash
-python scripts/materialize_analytics.py
+docker compose --profile pipeline up --build -d db pipeline
 ```
 
-This updates:
-- `analytics.plan_outcome_fact`
-- `analytics.venue_performance_prior`
-- `analytics.group_feature_snapshot`
-- `analytics.pipeline_runs`
-
-Artifacts written for local inspection:
-- `data/metrics/materialization_metrics.json`
-- `data/reports/analytics_status.json`
-
-## DVC Pipeline (Optional)
+4) Run pipeline actions through the pipeline container:
 
 ```bash
-dvc repro
-dvc dag
+docker compose --profile pipeline exec pipeline uv run --no-project dvc repro
+docker compose --profile pipeline exec pipeline uv run --no-project pytest tests/test_pipeline_components.py -v
+docker compose --profile pipeline exec pipeline uv run --no-project airflow db migrate
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger daily_analytics_materialization
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger ketchup_comprehensive_pipeline
 ```
 
-Assignment mapping document:
-- `data_pipeline.md`
+Notes:
 
-Policy:
-- Commit: `dvc.yaml`, `dvc.lock` when stages/deps change.
-- Do not commit generated `data/*` outputs.
+- API container uses Python 3.12 (`Dockerfile`).
+- Pipeline container uses Python 3.11 for Airflow compatibility (`Dockerfile.pipeline`).
+- Both images install dependencies with `uv`.
+- Backend Compose DB is internal-only (no host port binding) to avoid clashes with `ketchup-local`.
 
-## Airflow DAGs (Optional)
-
-- `daily_analytics_materialization`
-- `ketchup_comprehensive_pipeline`
-
-Example:
-
-```bash
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-airflow db init
-airflow dags list
-airflow dags trigger daily_analytics_materialization
-```
-
-## Key Environment Variables
+## Environment Variables
 
 Core:
-- `DATABASE_URL`
-- `BACKEND_INTERNAL_API_KEY`
-- `FRONTEND_URL`
 
-Planner:
-- `VLLM_BASE_URL`
+- `DATABASE_URL`
+- `DATABASE_URL_INTERNAL` (Compose internal DB URL; defaults to `postgresql://postgres:postgres@db:5432/appdb`)
+- `FRONTEND_URL`
+- `BACKEND_INTERNAL_API_KEY`
+
+Planner endpoint:
+
+- `VLLM_BASE_URL` (OpenAI-compatible `/v1` endpoint)
+- `VLLM_BASE_URL_INTERNAL` (Compose internal LLM URL; defaults to `http://host.docker.internal:8080/v1`)
 - `VLLM_MODEL`
 - `VLLM_API_KEY`
+
+Planner behavior:
+
 - `PLANNER_NOVELTY_TARGET_GENERATE`
 - `PLANNER_NOVELTY_TARGET_REFINE`
 - `PLANNER_FALLBACK_ENABLED`
 
-Tools:
-- `GOOGLE_MAPS_API_KEY`
-- `TAVILY_API_KEY`
+Tooling:
 
-## API Surface
+- `GOOGLE_MAPS_API_KEY` for Maps tools
+- `TAVILY_API_KEY` for web search fallback
 
-Auth:
-- `POST /api/auth/google-signin`
+## Planner Runtime Contract
 
-Users:
-- `GET /api/users/me`
-- `PUT /api/users/me/preferences`
-- `GET /api/users/me/availability`
-- `PUT /api/users/me/availability`
+- Planner calls an OpenAI-compatible chat completions API.
+- No llama.cpp-specific fields are sent.
+- Tool-calling is used when server/model supports it.
+- If tool output is invalid/empty, deterministic grounded fallback is used.
 
-Groups:
-- `POST /api/groups`
-- `GET /api/groups`
-- `GET /api/groups/{group_id}`
-- `PUT /api/groups/{group_id}`
-- `POST /api/groups/{group_id}/invite`
-- `POST /api/groups/{group_id}/invite/accept`
-- `POST /api/groups/{group_id}/invite/reject`
-- `PUT /api/groups/{group_id}/preferences`
-- `POST /api/groups/{group_id}/availability`
+For vLLM auto tool-calling, run vLLM with:
 
-Plans:
-- `POST /api/groups/{group_id}/generate-plans`
-- `GET /api/groups/{group_id}/plans/{round_id}`
-- `POST /api/groups/{group_id}/plans/{round_id}/vote`
-- `GET /api/groups/{group_id}/plans/{round_id}/results`
-- `POST /api/groups/{group_id}/plans/{round_id}/refine`
-- `POST /api/groups/{group_id}/plans/{round_id}/finalize`
+- `--enable-auto-tool-choice`
+- `--tool-call-parser <model-compatible-parser>`
 
-Feedback:
-- `POST /api/groups/{group_id}/events/{event_id}/feedback`
-- `GET /api/groups/{group_id}/events/{event_id}/feedback`
+## Troubleshooting
 
-Internal analytics (requires `X-Internal-Auth`):
-- `GET /api/internal/analytics/status`
-- `POST /api/internal/analytics/rebuild`
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| `dvc` fails with `_DIR_MARK` import error | `pathspec` drift | run inside pipeline container (pinned deps) |
+| Airflow import errors (`flask_session` / `connexion`) | package drift in host venv | run Airflow via pipeline container |
+| Planner tool loop disabled by server | vLLM missing tool-call flags | add `--enable-auto-tool-choice --tool-call-parser ...` |
 
-## Testing and Validation
+## Related Docs
 
-Static sanity:
-
-```bash
-python3 -m compileall agents analytics api services config models database utils pipelines scripts
-```
-
-Pipeline tests:
-
-```bash
-pip install -r requirements-pipeline.txt
-pytest tests/test_pipeline_components.py -v
-```
-
-Analytics materialization check:
-
-```bash
-python scripts/materialize_analytics.py
-```
-
-Local-stack API smoke (from `ketchup-local`):
-
-```bash
-docker compose -f ../ketchup-local/docker-compose.yml exec -T backend python -c "import httpx; print(httpx.get('http://localhost:8000/health', timeout=5).status_code)"
-```
+- `pipelines/README.md`
+- `data_pipeline.md`
+- `gcp.md`
+- `agents/README.md`

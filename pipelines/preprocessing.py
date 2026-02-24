@@ -62,6 +62,9 @@ class DataCleaner:
             Q1 = df[column].quantile(0.25)
             Q3 = df[column].quantile(0.75)
             IQR = Q3 - Q1
+            if pd.isna(IQR) or IQR == 0:
+                logger.info("Skipping IQR outlier removal for %s: zero/NaN IQR", column)
+                return df.copy()
             lower_bound = Q1 - threshold * IQR
             upper_bound = Q3 + threshold * IQR
             df_cleaned = df[(df[column] >= lower_bound) & (df[column] <= upper_bound)]

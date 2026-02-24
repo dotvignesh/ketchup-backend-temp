@@ -1,5 +1,6 @@
 venv/
 .venv/
+.venv-airflow/
 __pycache__/
 .env
 .git/
@@ -7,3 +8,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+airflow_home/
+data/
+.dvc/

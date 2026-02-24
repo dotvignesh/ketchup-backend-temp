@@ -1,66 +1,108 @@
-# Data Pipeline
+# Pipeline Runbook
 
-Pipeline code is Postgres-first and feeds planner quality.
+This runbook is container-first: execute pipeline tasks in `docker compose` using `uv`.
 
-## What It Does
+## Scope
 
-- Extracts raw availability/feedback data from Postgres.
-- Runs preprocessing and quality checks.
-- Materializes planner-facing analytics tables:
-  - `analytics.plan_outcome_fact`
-  - `analytics.venue_performance_prior`
-  - `analytics.group_feature_snapshot`
+- Data acquisition, preprocessing, validation, anomaly/bias checks
+- Analytics materialization for planner-facing feature tables
+- DVC reproducibility and Airflow orchestration
 
 ## Components
 
-- `airflow/dags/daily_etl_dag.py`: daily analytics materialization.
-- `airflow/dags/comprehensive_etl_dag.py`: materialization + validation + optional bias checks.
-- `scripts/*.py`: DVC stage scripts.
-- `dvc.yaml`: reproducible stage graph.
+- DVC pipeline: `dvc.yaml`
+- Stage scripts: `scripts/*.py`
+- Airflow DAGs: `pipelines/airflow/dags/*.py`
 
-## Dependencies
-
-Core backend deps are in `requirements.txt`.
-Optional pipeline stack:
+## Start Services
 
 ```bash
-pip install -r requirements-pipeline.txt
+cd ketchup-backend
+cp .env.example .env
+docker compose --profile pipeline up --build -d db pipeline
 ```
 
-## DVC Flow
+The `pipeline` service includes pinned dependencies from:
+
+- `requirements.txt`
+- `requirements-pipeline.txt`
+
+## DVC Commands
+
+Initialize workspace:
 
 ```bash
-dvc repro
-dvc dag
+docker compose --profile pipeline exec pipeline ./scripts/setup_dvc.sh
 ```
 
-Outputs:
+Run stages:
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project dvc repro
+```
+
+Inspect graph:
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project dvc dag
+```
+
+## Airflow Commands
+
+Migrate metadata DB:
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project airflow db migrate
+```
+
+List and trigger DAGs:
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags list
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger daily_analytics_materialization
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger ketchup_comprehensive_pipeline
+```
+
+Optional variable:
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project airflow variables set run_extended_bias_analysis true
+```
+
+## Tests
+
+```bash
+docker compose --profile pipeline exec pipeline uv run --no-project pytest tests/test_pipeline_components.py -v
+```
+
+## Output Artifacts
+
+Generated locally (ignored by git):
+
 - `data/raw/*`
 - `data/processed/*`
 - `data/metrics/*`
 - `data/reports/*`
 - `data/statistics/*`
-- `dvc.lock`
 
-The comprehensive DAG also writes `data/reports/pipeline_report.json` with per-task
-durations and ranked bottlenecks.
+Airflow metadata:
 
-Commit policy:
-- Commit `dvc.yaml` and `dvc.lock` if stages/deps changed.
-- Do not commit generated `data/*` outputs.
+- stored in Docker volume `ketchup-backend_airflow_home`
 
-## Airflow Flow
+Versioned metadata:
 
-```bash
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-airflow db init
-airflow dags list
-airflow dags trigger daily_analytics_materialization
-airflow dags trigger ketchup_comprehensive_pipeline
-```
+- `dvc.lock` (commit when stage definitions/dependencies change)
 
-Optional heavy bias checks:
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| DVC import failures on host | host package drift | run DVC in `pipeline` container |
+| Airflow import failures on host | host package drift | run Airflow in `pipeline` container |
+| Pipeline scripts cannot import project modules | missing `PYTHONPATH` | use provided `pipeline` service (sets `PYTHONPATH=/app`) |
+
+## Shutdown
 
 ```bash
-airflow variables set run_extended_bias_analysis true
+docker compose --profile pipeline down -v --remove-orphans
 ```

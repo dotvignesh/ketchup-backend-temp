@@ -1,149 +1,81 @@
-# Ketchup Data Pipeline Submission Notes
+# Data Pipeline Assignment Mapping
 
-This document maps the current pipeline implementation to the assignment rubric in
-`data_pipeline___MLOPS-1-2.pdf`.
+This document maps the implemented pipeline to the `data_pipeline___MLOPS-1-2.pdf` rubric.
 
-## Scope and Architecture
+## Summary
 
-Pipeline and runtime share one source of truth: Postgres.
+The pipeline is Postgres-first and integrated with product runtime:
 
-- Product data lives in core tables (`groups`, `plans`, `votes`, `events`, `feedback`, `availability_blocks`).
-- Pipeline materializes planner-facing analytics tables in `analytics.*`.
-- Planner reads those analytics features during generate/refine.
+- Source: live product tables in Postgres.
+- Processing: DVC stage graph + Airflow DAG orchestration.
+- Output: analytics features in `analytics.*` tables, consumed by planner generate/refine flows.
 
-Primary code paths:
+## Architecture Coverage
 
-- DAGs:
-  - `pipelines/airflow/dags/daily_etl_dag.py`
-  - `pipelines/airflow/dags/comprehensive_etl_dag.py`
-- DVC graph:
-  - `dvc.yaml`
-- Stage scripts:
-  - `scripts/acquire_data.py`
-  - `scripts/acquire_user_feedback.py`
-  - `scripts/preprocess_data.py`
-  - `scripts/validate_data.py`
-  - `scripts/detect_anomalies.py`
-  - `scripts/detect_bias.py`
-  - `scripts/materialize_analytics.py`
-  - `scripts/generate_statistics.py`
-- Reusable modules:
-  - `pipelines/preprocessing.py`
-  - `pipelines/validation.py`
-  - `pipelines/bias_detection.py`
-  - `pipelines/monitoring.py`
+Primary implementation paths:
 
-## Rubric Mapping
+- DVC graph: `dvc.yaml`
+- Stage scripts: `scripts/acquire_data.py`, `scripts/acquire_user_feedback.py`, `scripts/preprocess_data.py`, `scripts/validate_data.py`, `scripts/detect_anomalies.py`, `scripts/detect_bias.py`, `scripts/materialize_analytics.py`, `scripts/generate_statistics.py`
+- Reusable modules: `pipelines/preprocessing.py`, `pipelines/validation.py`, `pipelines/bias_detection.py`, `pipelines/monitoring.py`
+- Airflow DAGs: `pipelines/airflow/dags/daily_etl_dag.py`, `pipelines/airflow/dags/comprehensive_etl_dag.py`
 
-1. Data acquisition
-- Implemented in `scripts/acquire_data.py` and `scripts/acquire_user_feedback.py`.
-- Pulls from live Postgres using `DATABASE_URL`.
+## Rubric Matrix
 
-2. Preprocessing
-- Implemented in `scripts/preprocess_data.py` and `pipelines/preprocessing.py`.
-- Handles cleaning, missing values, outliers, and feature engineering.
+| Rubric Item | Implementation | Verification |
+|---|---|---|
+| Data acquisition | `acquire_data.py`, `acquire_user_feedback.py` | `dvc repro` stage success + generated raw CSVs |
+| Preprocessing | `preprocess_data.py`, `pipelines/preprocessing.py` | processed outputs + unit tests |
+| Test modules | `tests/test_pipeline_components.py` | `pytest tests/test_pipeline_components.py -v` |
+| Orchestration | Airflow DAGs (`daily_analytics_materialization`, `ketchup_comprehensive_pipeline`) | DAG trigger + run state |
+| Versioning | `dvc.yaml`, `dvc.lock` | `dvc dag`, lock updates |
+| Tracking/logging | `pipelines/monitoring.py`, report artifacts | `data/reports/pipeline_report.json` |
+| Schema/statistics | `validate_data.py`, `generate_statistics.py` | validation pass + statistics JSON |
+| Anomaly detection | `detect_anomalies.py` | anomaly report outputs |
+| Bias detection/mitigation | `detect_bias.py`, `pipelines/bias_detection.py` | bias report outputs + tests |
+| Flow optimization | Comprehensive DAG profiling/bottleneck section | `pipeline_report.json` performance block |
+| Reproducibility | DVC graph + deterministic scripts | repeated `dvc repro` no-op when unchanged |
+| Error handling | fail-fast scripts + DAG status tracking | non-zero exits and logged failures |
 
-3. Test modules
-- Implemented in `tests/test_pipeline_components.py`.
-- Covers preprocessing, validation, monitoring, and bias slicing utilities.
+## Execution Checklist
 
-4. Orchestration (Airflow)
-- Daily materialization DAG: `daily_analytics_materialization`.
-- Comprehensive DAG: `ketchup_comprehensive_pipeline`.
-- Task dependencies are explicit and deterministic.
-
-5. Versioning (DVC)
-- Stage graph is defined in `dvc.yaml`.
-- Setup helper: `scripts/setup_dvc.sh`.
-
-6. Tracking and logging
-- Structured logging helpers in `pipelines/monitoring.py`.
-- Comprehensive DAG writes `data/reports/pipeline_report.json`.
-- Performance section includes per-task runtime and top bottlenecks.
-
-7. Schema/statistics generation
-- Schema/quality checks in `scripts/validate_data.py`.
-- Statistics generation in `scripts/generate_statistics.py`.
-
-8. Anomaly detection and alerts
-- Anomaly detection in `scripts/detect_anomalies.py`.
-- Alerting primitives are implemented in `pipelines/monitoring.py` (`AnomalyAlert`).
-
-9. Bias detection and mitigation
-- Bias slicing and mitigation report generation in:
-  - `scripts/detect_bias.py`
-  - `pipelines/bias_detection.py`
-- Comprehensive DAG supports runtime-gated extended bias analysis via Airflow Variable:
-  - `run_extended_bias_analysis`
-
-10. Flow optimization
-- Comprehensive DAG report includes:
-  - per-task durations
-  - ranked bottlenecks
-
-11. Reproducibility
-- Pipeline can be reproduced from repo + env config + Postgres source.
-- DVC graph encodes inputs/outputs/metrics for deterministic stage execution.
-
-12. Error handling
-- Stage scripts use fail-fast behavior with explicit non-zero exits on failure.
-- DAG tasks preserve status and runtime profiles, including failed runs.
-
-## Runbook
-
-### 1) Install pipeline dependencies
+1. Start pipeline stack.
 
 ```bash
 cd ketchup-backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-pipeline.txt
+cp .env.example .env
+docker compose --profile pipeline up --build -d db pipeline
 ```
 
-### 2) Prepare DVC workspace
+2. Initialize DVC workspace.
 
 ```bash
-./scripts/setup_dvc.sh
+docker compose --profile pipeline exec pipeline ./scripts/setup_dvc.sh
 ```
 
-### 3) Reproduce DVC pipeline
+3. Reproduce the DVC pipeline and inspect graph.
 
 ```bash
-dvc repro
+docker compose --profile pipeline exec pipeline uv run --no-project dvc repro
+docker compose --profile pipeline exec pipeline uv run --no-project dvc dag
 ```
 
-### 4) Generate lockfile and inspect graph
+4. Run pipeline unit tests.
 
 ```bash
-dvc dag
+docker compose --profile pipeline exec pipeline uv run --no-project pytest tests/test_pipeline_components.py -v
 ```
 
-`dvc.lock` is generated or updated after `dvc repro`.
-
-### 5) Run targeted tests
+5. Trigger Airflow DAGs.
 
 ```bash
-pytest tests/test_pipeline_components.py -v
+docker compose --profile pipeline exec pipeline uv run --no-project airflow db migrate
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger daily_analytics_materialization
+docker compose --profile pipeline exec pipeline uv run --no-project airflow dags trigger ketchup_comprehensive_pipeline
 ```
 
-### 6) Trigger Airflow DAGs
+## Generated Artifacts
 
-```bash
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-airflow db init
-airflow dags trigger daily_analytics_materialization
-airflow dags trigger ketchup_comprehensive_pipeline
-```
-
-Optional:
-
-```bash
-airflow variables set run_extended_bias_analysis true
-```
-
-## Generated Outputs
-
-Typical generated artifacts:
+Local generated artifacts:
 
 - `data/raw/*.csv`
 - `data/processed/*.csv`
@@ -154,6 +86,17 @@ Typical generated artifacts:
 
 Repository policy:
 
-- Commit pipeline code/config and `dvc.lock` when stage graph changes.
+- Commit pipeline code/config updates.
+- Commit `dvc.lock` when stage graph/dependencies change.
 - Do not commit generated `data/*` outputs.
 
+## Compatibility Notes
+
+Pinned in `requirements-pipeline.txt`:
+
+- `pathspec==0.11.2`
+- `connexion<3`
+- `pendulum<3`
+- `Flask-Session==0.4.0`
+
+These pins are required for stable `dvc` + `apache-airflow==2.7.2` behavior.

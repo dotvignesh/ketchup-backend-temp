@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from enum import Enum
 from typing import Any, Dict, List
 
+import requests
 from pythonjsonlogger import jsonlogger
 
 logger = logging.getLogger(__name__)
@@ -144,8 +145,6 @@ class AnomalyAlert:
 
     def _send_slack_alert(self, alert: Dict) -> None:
         try:
-            import requests
-
             color_map = {
                 "INFO": "#36a64f",
                 "WARNING": "#ff9900",

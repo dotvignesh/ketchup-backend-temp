@@ -36,6 +36,55 @@ class SchemaValidator:
     """Column-level schema and required-field checks."""
 
     @staticmethod
+    def _column_matches_expected_type(series: pd.Series, expected_type: type) -> bool:
+        dtype = series.dtype
+
+        # Accept both naive and timezone-aware datetime dtypes for datetime expectations.
+        try:
+            if np.issubdtype(expected_type, np.datetime64):
+                return bool(pd.api.types.is_datetime64_any_dtype(dtype))
+        except TypeError:
+            pass
+
+        try:
+            if np.issubdtype(expected_type, np.timedelta64):
+                return bool(pd.api.types.is_timedelta64_dtype(dtype))
+        except TypeError:
+            pass
+
+        try:
+            if np.issubdtype(expected_type, np.bool_):
+                return bool(pd.api.types.is_bool_dtype(dtype))
+        except TypeError:
+            pass
+
+        try:
+            if np.issubdtype(expected_type, np.integer):
+                return bool(pd.api.types.is_integer_dtype(dtype))
+        except TypeError:
+            pass
+
+        try:
+            if np.issubdtype(expected_type, np.floating):
+                return bool(pd.api.types.is_float_dtype(dtype))
+        except TypeError:
+            pass
+
+        try:
+            if np.issubdtype(expected_type, np.number):
+                return bool(pd.api.types.is_numeric_dtype(dtype))
+        except TypeError:
+            pass
+
+        if expected_type in (object, np.object_, str, np.str_):
+            return bool(pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype))
+
+        try:
+            return bool(np.issubdtype(dtype, expected_type))
+        except TypeError:
+            return False
+
+    @staticmethod
     def validate_schema(df: pd.DataFrame, schema: Dict[str, type]) -> ValidationResult:
         issues = []
 
@@ -44,7 +93,7 @@ class SchemaValidator:
                 issues.append(f"Missing required column: {col}")
                 continue
 
-            if not np.issubdtype(df[col].dtype, expected_type):
+            if not SchemaValidator._column_matches_expected_type(df[col], expected_type):
                 issues.append(
                     f"Column {col} has type {df[col].dtype}, "
                     f"expected {expected_type}",
