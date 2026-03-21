@@ -108,6 +108,21 @@ Primary code paths:
 - Stage scripts use fail-fast behavior with explicit non-zero exits on failure.
 - DAG tasks preserve status and runtime profiles, including failed runs.
 
+## Planner Evaluation Addendum
+
+For the planner/model portion of the assignment, the repo now includes a domain-valid synthetic tool-calling benchmark instead of relying on a generic function-calling dataset.
+
+- Benchmark driver: `scripts/evaluate_tool_calling_bfcl.py`
+- Benchmark data: `data/benchmarks/synthetic_group_outings_tool_calling.json`
+- Output artifact: `data/reports/tool_calling_group_outings_synthetic_25.json`
+
+Why this was added:
+
+- Domain validity: benchmark prompts are synthetic but shaped like actual Ketchup outing-planning requests, including budgets, accessibility needs, dietary constraints, nightlife/event cases, and ambiguous cases where the model should abstain from calling a tool.
+- Tool-calling evaluation: benchmark cases explicitly test whether the model chooses the right planner tool (`search_places`, `get_directions`, `web_search`) and whether it correctly decides not to call a tool when critical grounding information is missing.
+- Experiment tracking: Weights & Biases logging is integrated into the benchmark runner so each example can be tracked with running metrics, final summary metrics, and per-example outputs for comparison across model/config versions.
+- Argument scoring realism: tool arguments are not graded with brittle strict-equality matching; instead, the served model acts as an LLM judge to score semantic argument quality while tool/no-tool and tool-name checks remain exact.
+
 ## Generated Outputs
 
 Typical generated artifacts:
