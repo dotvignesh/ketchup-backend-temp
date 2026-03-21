@@ -18,7 +18,10 @@ import ast
 import json
 import os
 import random
+import socket
 import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -226,6 +229,13 @@ def _ensure_endpoint_available(client: httpx.Client, base_url: str) -> str:
     )
 
 
+def _allocate_free_port(host: str) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        sock.listen(1)
+        return int(sock.getsockname()[1])
+
+
 def _spawn_local_vllm_server(
     *,
     model_ref: str,
@@ -236,9 +246,10 @@ def _spawn_local_vllm_server(
     max_model_len: int,
     max_num_seqs: int,
     tool_call_parser: str,
+    log_path: Path,
 ) -> subprocess.Popen[str]:
     command = [
-        "python3",
+        sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
         "--host",
@@ -260,30 +271,64 @@ def _spawn_local_vllm_server(
         tool_call_parser,
     ]
 
+    log_handle = log_path.open("w", encoding="utf-8")
     return subprocess.Popen(
         command,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
         text=True,
         env=os.environ.copy(),
     )
 
 
-def _wait_for_server(base_url: str, timeout_seconds: float) -> str:
+def _read_log_excerpt(log_path: Path, max_chars: int = 4000) -> str:
+    if not log_path.exists():
+        return "(no log file created)"
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        return "(log file is empty)"
+    return text[-max_chars:]
+
+
+def _wait_for_server(
+    base_url: str,
+    timeout_seconds: float,
+    process: subprocess.Popen[str] | None = None,
+    log_path: Path | None = None,
+) -> str:
     deadline = time.time() + timeout_seconds
     last_error: str | None = None
 
     with httpx.Client() as client:
         while time.time() < deadline:
+            if process is not None:
+                return_code = process.poll()
+                if return_code is not None:
+                    log_excerpt = _read_log_excerpt(log_path) if log_path is not None else "(no logs available)"
+                    raise RuntimeError(
+                        "Local vLLM server exited before becoming ready "
+                        f"(exit code {return_code}). Startup log tail:\n{log_excerpt}"
+                    )
             try:
                 return _ensure_endpoint_available(client, base_url)
             except Exception as exc:
                 last_error = str(exc)
                 time.sleep(2)
 
+    if process is not None:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+    log_suffix = ""
+    if log_path is not None:
+        log_suffix = f"\nStartup log tail:\n{_read_log_excerpt(log_path)}"
     raise RuntimeError(
         "Timed out waiting for the local vLLM server to become ready. "
-        f"Last error: {last_error}"
+        f"Last error: {last_error}{log_suffix}"
     )
 
 
@@ -336,7 +381,12 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--benchmark-url", default=DEFAULT_BENCHMARK_URL)
     parser.add_argument("--host", default="127.0.0.1", help="Host for the local vLLM server.")
-    parser.add_argument("--port", type=int, default=8080, help="Port for the local vLLM server.")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Port for the local vLLM server. Use 0 to auto-select a free port.",
+    )
     parser.add_argument("--startup-timeout", type=float, default=180.0, help="Seconds to wait for local vLLM readiness.")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.7)
     parser.add_argument("--max-model-len", type=int, default=4096)
@@ -350,26 +400,38 @@ def main() -> None:
     args = parser.parse_args()
 
     local_process: subprocess.Popen[str] | None = None
+    log_path: Path | None = None
     base_url = args.base_url
     if base_url is None:
-        base_url = f"http://{args.host}:{args.port}/v1"
+        port = args.port or _allocate_free_port(args.host)
+        base_url = f"http://{args.host}:{port}/v1"
         model_ref = args.model_ref or args.model
+        log_path = Path(tempfile.gettempdir()) / f"evaluate_tool_calling_bfcl_vllm_{port}.log"
         print(f"Starting local vLLM server for model ref: {model_ref}")
+        print(f"Using local port: {port}")
+        print(f"vLLM startup log: {log_path}")
         local_process = _spawn_local_vllm_server(
             model_ref=model_ref,
             served_model_name=args.model,
             host=args.host,
-            port=args.port,
+            port=port,
             gpu_memory_utilization=args.gpu_memory_utilization,
             max_model_len=args.max_model_len,
             max_num_seqs=args.max_num_seqs,
             tool_call_parser=args.tool_call_parser,
+            log_path=log_path,
         )
         try:
-            completions_url = _wait_for_server(base_url, args.startup_timeout)
+            completions_url = _wait_for_server(
+                base_url,
+                args.startup_timeout,
+                process=local_process,
+                log_path=log_path,
+            )
         except Exception:
-            local_process.kill()
-            local_process.wait(timeout=10)
+            if local_process.poll() is None:
+                local_process.kill()
+                local_process.wait(timeout=10)
             raise
     else:
         with httpx.Client() as client:
