@@ -65,3 +65,5 @@ data/analysis/
 *.tfstate
 *.tfstate.backup
 *.tfvars
+
+.claude/

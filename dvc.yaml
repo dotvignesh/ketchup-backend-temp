@@ -82,6 +82,40 @@ stages:
       - data/statistics/summary.json:
           cache: false
 
+  model_bias_eval:
+    cmd: >-
+      python scripts/run_model_bias_synthetic_eval.py
+      --base-url ${VLLM_BASE_URL:-http://localhost:8081}
+      --model ${VLLM_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
+      --n 20 --seed 25 --max-tokens 1024
+      --save-csv data/reports/model_bias_results.csv
+    deps:
+      - scripts/run_model_bias_synthetic_eval.py
+    outs:
+      - data/reports/model_bias_results.csv:
+          cache: true
+
+  model_bias_slices:
+    cmd: >-
+      python scripts/check_model_bias_slices.py
+      --csv data/reports/model_bias_results.csv
+      --out data/reports/model_bias_slicing_report.md
+    deps:
+      - scripts/check_model_bias_slices.py
+      - data/reports/model_bias_results.csv
+    outs:
+      - data/reports/model_bias_slicing_report.md:
+          cache: false
+
+  model_bias_fairlearn:
+    cmd: >-
+      python scripts/check_model_bias_fairlearn.py
+      --csv data/reports/model_bias_results.csv
+      --slice city_tier,budget_tier
+    deps:
+      - scripts/check_model_bias_fairlearn.py
+      - data/reports/model_bias_results.csv
+
 plots:
   - data/analysis/plots/data_distribution.csv:
       x: bins

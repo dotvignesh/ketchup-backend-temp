@@ -1,0 +1,48 @@
+name: Model Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/run_model_bias_synthetic_eval.py"
+      - "scripts/check_model_bias_slices.py"
+      - "scripts/check_model_bias_fairlearn.py"
+      - "scripts/evaluate_tool_calling_bfcl.py"
+      - "pipelines/bias_detection.py"
+      - "data/benchmarks/**"
+      - "dvc.yaml"
+  workflow_dispatch:
+
+jobs:
+  model-bias-evaluation:
+    runs-on: ubuntu-latest
+    env:
+      VLLM_BASE_URL: ${{ vars.VLLM_BASE_URL || 'http://localhost:8081' }}
+      VLLM_MODEL: ${{ vars.VLLM_MODEL || 'Qwen/Qwen3-4B-Instruct-2507' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Install DVC
+        run: pip install dvc
+
+      - name: Run model bias evaluation pipeline (DVC)
+        run: dvc repro model_bias_eval model_bias_slices model_bias_fairlearn
+
+      - name: Upload bias reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-bias-reports
+          path: |
+            data/reports/model_bias_results.csv
+            data/reports/model_bias_slicing_report.md

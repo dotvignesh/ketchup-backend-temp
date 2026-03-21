@@ -10,7 +10,9 @@ import numpy as np
 import pandas as pd
 
 
-def bootstrap_ci(values: pd.Series, n_boot: int = 5000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+def bootstrap_ci(
+    values: pd.Series, n_boot: int = 5000, alpha: float = 0.05, seed: int = 0
+) -> tuple[float, float]:
     rng = np.random.default_rng(seed)
     vals = np.array(values)
     boots = rng.choice(vals, size=(n_boot, len(vals)), replace=True).mean(axis=1)
@@ -21,13 +23,19 @@ def bootstrap_ci(values: pd.Series, n_boot: int = 5000, alpha: float = 0.05, see
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv", default="data/reports/model_bias_results.csv", help="Path to results CSV.")
+    parser.add_argument(
+        "--csv",
+        default="data/reports/model_bias_results.csv",
+        help="Path to results CSV.",
+    )
     parser.add_argument(
         "--out",
         default="data/reports/model_bias_slicing_report.md",
         help="Markdown report output path.",
     )
-    parser.add_argument("--min-n", type=int, default=5, help="Minimum row count for worst-slice tables.")
+    parser.add_argument(
+        "--min-n", type=int, default=5, help="Minimum row count for worst-slice tables."
+    )
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -59,7 +67,8 @@ def main() -> None:
 
     worst = city_budget.iloc[0]
     worst_values = df[
-        (df["city_tier"] == worst["city_tier"]) & (df["budget_tier"] == worst["budget_tier"])
+        (df["city_tier"] == worst["city_tier"])
+        & (df["budget_tier"] == worst["budget_tier"])
     ]["budget_compliance"]
     worst_ci = bootstrap_ci(worst_values)
 
@@ -72,23 +81,36 @@ def main() -> None:
         )
         .reset_index()
     )
-    worst_intersection = intersection[intersection["n"] >= args.min_n].sort_values("budget_compliance").head(10)
+    worst_intersection = (
+        intersection[intersection["n"] >= args.min_n]
+        .sort_values("budget_compliance")
+        .head(10)
+    )
 
     print("\n=== Overall ===")
     print(overall)
-    print(f"\nOverall budget_compliance 95% CI (bootstrap): [{overall_ci[0]:.3f}, {overall_ci[1]:.3f}]")
+    print(
+        f"\nOverall budget_compliance 95% CI (bootstrap): [{overall_ci[0]:.3f}, {overall_ci[1]:.3f}]"
+    )
 
     print("\n=== Slice: city_tier x budget_tier ===")
-    print(city_budget[["city_tier", "budget_tier", "n", "budget_compliance", "full_budget_ok"]].to_string(index=False))
+    print(
+        city_budget[
+            ["city_tier", "budget_tier", "n", "budget_compliance", "full_budget_ok"]
+        ].to_string(index=False)
+    )
 
+    overall_table = pd.DataFrame(
+        {"metric": overall.index, "value": overall.values}
+    ).to_markdown(index=False)
     report = f"""# Bias Slicing Eval Report (Synthetic Baseline)
 
-_Data source:_ `{args.csv}`  
+_Data source:_ `{args.csv}`
 _Rows (planning cycles):_ {len(df)}
 
 ## Overall metrics
 
-{pd.DataFrame({{"metric": overall.index, "value": overall.values}}).to_markdown(index=False)}
+{overall_table}
 
 Overall `budget_compliance` bootstrap 95% CI: **[{overall_ci[0]:.3f}, {overall_ci[1]:.3f}]**
 
