@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from requests import Response
 
 PRICE_LEVELS = ["$", "$$", "$$$"]
 CATEGORIES = [
@@ -228,10 +229,10 @@ def call_vllm_chat(
             "json_schema": {"name": "ketchup-plan", "schema": OUTPUT_SCHEMA},
         }
 
-    response = session.post(url, json=payload, timeout=90)
+    response = request_with_retries(session, "post", url, json=payload, timeout=90)
     if response.status_code != 200 and use_schema:
         payload.pop("response_format", None)
-        retry_response = session.post(url, json=payload, timeout=90)
+        retry_response = request_with_retries(session, "post", url, json=payload, timeout=90)
         if retry_response.status_code != 200:
             retry_response.raise_for_status()
         data = retry_response.json()
@@ -240,6 +241,38 @@ def call_vllm_chat(
     response.raise_for_status()
     data = response.json()
     return data["choices"][0]["message"]["content"], use_schema
+
+
+def request_with_retries(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    attempts: int = 8,
+    backoff_seconds: float = 5.0,
+    **kwargs: Any,
+) -> Response:
+    retriable_statuses = {404, 429, 500, 502, 503, 504}
+    last_exception: Exception | None = None
+    last_response: Response | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = session.request(method, url, **kwargs)
+            if response.status_code not in retriable_statuses:
+                return response
+            last_response = response
+        except requests.RequestException as exc:
+            last_exception = exc
+
+        if attempt < attempts:
+            time.sleep(backoff_seconds * attempt)
+
+    if last_response is not None:
+        return last_response
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError(f"Request failed without response or exception for {method.upper()} {url}")
 
 
 def score(sample: dict[str, Any], output: dict[str, Any] | None) -> dict[str, Any]:
@@ -371,7 +404,12 @@ def main() -> None:
     session = requests.Session()
 
     try:
-        response = session.get(f"{args.base_url.rstrip('/')}/v1/models", timeout=10)
+        response = request_with_retries(
+            session,
+            "get",
+            f"{args.base_url.rstrip('/')}/v1/models",
+            timeout=30,
+        )
         if response.status_code == 200:
             print(f"[INFO] /v1/models reachable. {len(response.json().get('data', []))} model(s) advertised.")
     except Exception as exc:
