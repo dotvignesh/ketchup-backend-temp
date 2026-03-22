@@ -85,8 +85,6 @@ stages:
   model_bias_eval:
     cmd: >-
       python scripts/run_model_bias_synthetic_eval.py
-      --base-url $${VLLM_BASE_URL:-http://localhost:8080}
-      --model $${VLLM_MODEL:-Qwen/Qwen3-4B-Instruct-2507}
       --n 20 --seed 25 --max-tokens 1024
       --save-csv data/reports/model_bias_results.csv
     deps:
